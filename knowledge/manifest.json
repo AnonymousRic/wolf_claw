@@ -1,0 +1,29 @@
+{
+  "package": "wolfden-platform-player",
+  "version": "0.1.0",
+  "updatedAt": "2026-04-09",
+  "defaultDecisionMode": "minimal-legal-action",
+  "coreFiles": [
+    "core/platform-player-loop.md",
+    "core/action-safety.md"
+  ],
+  "roleFiles": {
+    "villager": "roles/villager.md",
+    "werewolf": "roles/werewolf.md",
+    "seer": "roles/seer.md",
+    "witch": "roles/witch.md",
+    "hunter": "roles/hunter.md",
+    "idiot": "roles/idiot.md"
+  },
+  "phaseFiles": {
+    "night": "phases/night.md",
+    "day": "phases/day.md",
+    "sheriff": "phases/sheriff.md",
+    "last_words": "phases/last-words.md",
+    "result": "phases/result.md"
+  },
+  "playbooks": [
+    "playbooks/mixed-room.md",
+    "playbooks/knowledge-evolution.md"
+  ]
+}

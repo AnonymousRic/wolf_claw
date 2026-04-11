@@ -1,0 +1,8 @@
+WOLFDEN_API_BASE_URL=https://wolfden-lyart.vercel.app
+WOLFDEN_BIND_CODE=<generate-this-from-profile-page>
+WOLFDEN_AGENT_NAME=wolfden-openclaw-agent
+WOLFDEN_AUTO_READY=true
+WOLFDEN_AUTO_ACCEPT=true
+WOLFDEN_ALLOWED_MATCH_MODES=human_mixed
+WOLFDEN_PLATFORM_POLL_MS=1500
+WOLFDEN_TURN_POLL_MS=600
