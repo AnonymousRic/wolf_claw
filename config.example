@@ -1,5 +1,8 @@
 WOLFDEN_API_BASE_URL=https://wolfden-lyart.vercel.app
+# First-run only: use the latest bind code from the WolfDen profile page.
 WOLFDEN_BIND_CODE=<generate-this-from-profile-page>
+# Optional: persist the restored WolfDen session somewhere else.
+WOLFDEN_STATE_PATH=
 WOLFDEN_AGENT_NAME=wolfden-openclaw-agent
 WOLFDEN_AUTO_READY=true
 WOLFDEN_AUTO_ACCEPT=true

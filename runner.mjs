@@ -1,17 +1,19 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import path from 'node:path';
 import process from 'node:process';
 
 const PACKAGE_VERSION = '0.1.0';
 const ROLE_FALLBACK = 'villager';
 const DEFAULT_WOLFDEN_API_BASE_URL = 'https://wolfden-lyart.vercel.app';
-
-function requireEnv(name) {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return value;
-}
+const DEFAULT_PLATFORM_HEARTBEAT_INTERVAL_MS = 15_000;
+const STATE_SCHEMA_VERSION = 1;
+const DEFAULT_STATE_PATH = path.join(
+  homedir(),
+  '.wolfden',
+  'openclaw-platform-player',
+  'state.json',
+);
 
 function normalizeBaseUrl(baseUrl) {
   return baseUrl.replace(/\/$/, '');
@@ -19,6 +21,11 @@ function normalizeBaseUrl(baseUrl) {
 
 function getBaseUrl() {
   return normalizeBaseUrl(process.env.WOLFDEN_API_BASE_URL ?? DEFAULT_WOLFDEN_API_BASE_URL);
+}
+
+function getStatePath() {
+  const configuredPath = process.env.WOLFDEN_STATE_PATH;
+  return configuredPath ? path.resolve(configuredPath) : DEFAULT_STATE_PATH;
 }
 
 function getBoolEnv(name, fallback) {
@@ -41,6 +48,14 @@ function getNumberEnv(name, fallback) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isObject(value) {
+  return typeof value === 'object' && value !== null;
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 class HttpError extends Error {
@@ -99,6 +114,69 @@ async function readTextResource(relativePath) {
 
 async function readJsonResource(relativePath) {
   return JSON.parse(await readTextResource(relativePath));
+}
+
+function normalizePersistedState(raw) {
+  if (!isObject(raw)) {
+    return null;
+  }
+
+  if (raw.schemaVersion !== STATE_SCHEMA_VERSION) {
+    return null;
+  }
+
+  if (!isNonEmptyString(raw.baseUrl) || !isNonEmptyString(raw.openclawPlayerId) || !isNonEmptyString(raw.sessionToken)) {
+    return null;
+  }
+
+  return {
+    schemaVersion: STATE_SCHEMA_VERSION,
+    baseUrl: normalizeBaseUrl(raw.baseUrl),
+    openclawPlayerId: raw.openclawPlayerId,
+    sessionToken: raw.sessionToken,
+    agentName: isNonEmptyString(raw.agentName) ? raw.agentName : 'wolfden-openclaw-agent',
+    savedAt: isNonEmptyString(raw.savedAt) ? raw.savedAt : new Date().toISOString(),
+  };
+}
+
+async function clearPersistedState(statePath) {
+  await rm(statePath, { force: true });
+}
+
+async function loadPersistedState(statePath) {
+  try {
+    const raw = JSON.parse(await readFile(statePath, 'utf8'));
+    const normalized = normalizePersistedState(raw);
+    if (!normalized) {
+      console.warn(`[state] invalid state file, clearing ${statePath}`);
+      await clearPersistedState(statePath);
+      return null;
+    }
+    return normalized;
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return null;
+    }
+
+    console.warn(`[state] failed to read ${statePath}, clearing it`);
+    await clearPersistedState(statePath);
+    return null;
+  }
+}
+
+async function savePersistedState(statePath, input) {
+  const persistedState = {
+    schemaVersion: STATE_SCHEMA_VERSION,
+    baseUrl: normalizeBaseUrl(input.baseUrl),
+    openclawPlayerId: input.openclawPlayerId,
+    sessionToken: input.sessionToken,
+    agentName: input.agentName,
+    savedAt: new Date().toISOString(),
+  };
+
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await writeFile(statePath, `${JSON.stringify(persistedState, null, 2)}\n`, 'utf8');
+  return persistedState;
 }
 
 async function loadKnowledgePackage() {
@@ -255,6 +333,91 @@ async function updatePlatformPreferences(baseUrl, openclawPlayerId, preferences)
   });
 }
 
+function buildPlatformPreferences(playerPreferences, config) {
+  return {
+    ...playerPreferences,
+    enabled: true,
+    autoAcceptEnabled: config.autoAccept,
+    allowedMatchModes: config.allowedMatchModes,
+  };
+}
+
+async function restorePersistedPlatformSession(config) {
+  const persistedState = await loadPersistedState(config.statePath);
+  if (!persistedState) {
+    return null;
+  }
+
+  if (persistedState.baseUrl !== config.baseUrl) {
+    console.warn(
+      `[state] ignoring saved session for ${persistedState.baseUrl}; current baseUrl is ${config.baseUrl}`,
+    );
+    return null;
+  }
+
+  try {
+    const heartbeat = await requestJson(config.baseUrl, '/api/openclaw/agents/heartbeat', {
+      method: 'POST',
+      body: {
+        sessionToken: persistedState.sessionToken,
+        ready: config.autoReady,
+      },
+    });
+
+    await savePersistedState(config.statePath, {
+      baseUrl: config.baseUrl,
+      openclawPlayerId: heartbeat.player.openclawPlayerId,
+      sessionToken: persistedState.sessionToken,
+      agentName: heartbeat.player.agentName ?? persistedState.agentName ?? config.agentName,
+    });
+
+    return {
+      restored: true,
+      sessionToken: persistedState.sessionToken,
+      heartbeatIntervalMs: DEFAULT_PLATFORM_HEARTBEAT_INTERVAL_MS,
+      player: heartbeat.player,
+      invitations: heartbeat.invitations,
+    };
+  } catch (error) {
+    if (error instanceof HttpError && error.statusCode === 401) {
+      console.warn('[state] saved WolfDen session is invalid, clearing local state and falling back to bind code bootstrap.');
+      await clearPersistedState(config.statePath);
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function registerPlatformSession(config) {
+  if (!config.bindCode) {
+    throw new Error(
+      'No saved WolfDen session was found. Generate a new bind code from the WolfDen profile page to initialize this installation again.',
+    );
+  }
+
+  const registration = await requestJson(config.baseUrl, '/api/openclaw/agents/register', {
+    method: 'POST',
+    body: {
+      bindCode: config.bindCode,
+      agentName: config.agentName,
+      displayName: config.agentName,
+      autoReady: config.autoReady,
+    },
+  });
+
+  await savePersistedState(config.statePath, {
+    baseUrl: config.baseUrl,
+    openclawPlayerId: registration.player.openclawPlayerId,
+    sessionToken: registration.sessionToken,
+    agentName: registration.player.agentName ?? config.agentName,
+  });
+
+  return {
+    ...registration,
+    restored: false,
+  };
+}
+
 async function playAcceptedInvitation(config, invitation, seatToken, heartbeatIntervalMs, knowledgeLibrary) {
   const seatId = invitation.seatId;
   let stopped = false;
@@ -323,7 +486,8 @@ async function main() {
 
   const config = {
     baseUrl: getBaseUrl(),
-    bindCode: requireEnv('WOLFDEN_BIND_CODE'),
+    bindCode: process.env.WOLFDEN_BIND_CODE ?? null,
+    statePath: getStatePath(),
     agentName: process.env.WOLFDEN_AGENT_NAME ?? 'wolfden-openclaw-agent',
     autoReady: getBoolEnv('WOLFDEN_AUTO_READY', true),
     autoAccept: getBoolEnv('WOLFDEN_AUTO_ACCEPT', true),
@@ -335,29 +499,22 @@ async function main() {
     turnPollMs: getNumberEnv('WOLFDEN_TURN_POLL_MS', 600),
   };
 
-  const registration = await requestJson(config.baseUrl, '/api/openclaw/agents/register', {
-    method: 'POST',
-    body: {
-      bindCode: config.bindCode,
-      agentName: config.agentName,
-      displayName: config.agentName,
-      autoReady: config.autoReady,
-    },
-  });
+  const session = await restorePersistedPlatformSession(config) ?? await registerPlatformSession(config);
 
-  console.log(
-    `[register] baseUrl=${config.baseUrl} player=${registration.player.openclawPlayerId} session=${registration.sessionToken} interval=${registration.heartbeatIntervalMs}`,
-  );
+  if (session.restored) {
+    console.log(
+      `[restore] baseUrl=${config.baseUrl} player=${session.player.openclawPlayerId} session=${session.sessionToken} state=${config.statePath}`,
+    );
+  } else {
+    console.log(
+      `[register] baseUrl=${config.baseUrl} player=${session.player.openclawPlayerId} session=${session.sessionToken} interval=${session.heartbeatIntervalMs} state=${config.statePath}`,
+    );
+  }
 
-  const platformPreferences = {
-    ...registration.player.preferences,
-    enabled: true,
-    autoAcceptEnabled: config.autoAccept,
-    allowedMatchModes: config.allowedMatchModes,
-  };
+  const platformPreferences = buildPlatformPreferences(session.player.preferences, config);
   await updatePlatformPreferences(
     config.baseUrl,
-    registration.player.openclawPlayerId,
+    session.player.openclawPlayerId,
     platformPreferences,
   );
   console.log(
@@ -365,13 +522,14 @@ async function main() {
   );
 
   let currentInvitationId = null;
+  let sessionExpired = false;
   const runPlatformHeartbeat = async () => {
     while (true) {
       try {
         const heartbeat = await requestJson(config.baseUrl, '/api/openclaw/agents/heartbeat', {
           method: 'POST',
           body: {
-            sessionToken: registration.sessionToken,
+            sessionToken: session.sessionToken,
             ready: config.autoReady,
           },
         });
@@ -381,19 +539,38 @@ async function main() {
           console.log(`[platform] pendingInvitations=${pendingCount}`);
         }
       } catch (error) {
+        if (error instanceof HttpError && error.statusCode === 401) {
+          sessionExpired = true;
+          await clearPersistedState(config.statePath);
+          console.error('[platform-heartbeat] WolfDen session expired. Local session cache was cleared.');
+          return;
+        }
         console.error('[platform-heartbeat]', error instanceof Error ? error.message : String(error));
       }
 
-      await sleep(registration.heartbeatIntervalMs);
+      await sleep(session.heartbeatIntervalMs ?? DEFAULT_PLATFORM_HEARTBEAT_INTERVAL_MS);
     }
   };
 
   void runPlatformHeartbeat();
 
   while (true) {
-    const invitations = await requestJson(config.baseUrl, '/api/openclaw/agents/invitations', {
-      headers: { 'x-openclaw-session': registration.sessionToken },
-    });
+    if (sessionExpired) {
+      throw new Error('WolfDen session expired after startup. Restart the existing skill installation; only generate a new bind code if you intentionally unbound this OpenClaw.');
+    }
+
+    let invitations;
+    try {
+      invitations = await requestJson(config.baseUrl, '/api/openclaw/agents/invitations', {
+        headers: { 'x-openclaw-session': session.sessionToken },
+      });
+    } catch (error) {
+      if (error instanceof HttpError && error.statusCode === 401) {
+        await clearPersistedState(config.statePath);
+        throw new Error('WolfDen session expired while polling invitations. Local session cache was cleared.');
+      }
+      throw error;
+    }
 
     const pendingInvitation = invitations.find((item) => item.status === 'pending');
     if (!pendingInvitation || currentInvitationId) {
@@ -412,7 +589,7 @@ async function main() {
         {
           method: 'POST',
           body: {
-            sessionToken: registration.sessionToken,
+            sessionToken: session.sessionToken,
             accept,
           },
         },
@@ -423,7 +600,7 @@ async function main() {
           config,
           pendingInvitation,
           resolved.seatToken,
-          registration.heartbeatIntervalMs,
+          session.heartbeatIntervalMs ?? DEFAULT_PLATFORM_HEARTBEAT_INTERVAL_MS,
           knowledgeLibrary,
         );
       }
