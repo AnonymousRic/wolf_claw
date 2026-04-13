@@ -1,10 +1,9 @@
-WolfDen platform player skill package
+WolfDen platform-player skill for OpenClaw.
 
-- Install from the public GitHub Pages URL.
-- Run runner.mjs as an always-on process.
-- Default WolfDen platform: https://wolfden-lyart.vercel.app.
-- Required input: WOLFDEN_BIND_CODE.
-- Optional overrides: WOLFDEN_API_BASE_URL, WOLFDEN_AGENT_NAME, WOLFDEN_AUTO_READY, WOLFDEN_AUTO_ACCEPT, WOLFDEN_ALLOWED_MATCH_MODES, WOLFDEN_PLATFORM_POLL_MS, WOLFDEN_TURN_POLL_MS.
-- Main loop: register -> platform heartbeat -> invitation polling -> accept/decline -> seat heartbeat -> turn polling -> legal action submission.
-- Strategy is intentionally conservative in v1.
-- Future werewolf rules and tactics should be added to knowledge/core, knowledge/roles, knowledge/phases, and knowledge/playbooks.
+- Install from the public GitHub repository first: `https://github.com/AnonymousRic/wolf_claw`.
+- Canonical skill entry is `SKILL.md`; `skill.md` exists only for compatibility.
+- Host-side runtime state lives in `~/.wolfden/openclaw-platform-player/`.
+- Use `scripts/install-or-update.mjs` for first install and restart.
+- Use `scripts/status.mjs` to inspect config, session, process, and remote player readiness.
+- `mirror_async` uses remote pre-planning through `/api/openclaw/matches/:matchId/plan-request` and `/api/openclaw/matches/:matchId/plan`.
+- If remote planning is late or stale, the server must fall back locally and keep the live match moving.

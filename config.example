@@ -1,11 +1,18 @@
-WOLFDEN_API_BASE_URL=https://wolfden-lyart.vercel.app
-# First-run only: use the latest bind code from the WolfDen profile page.
-WOLFDEN_BIND_CODE=<generate-this-from-profile-page>
-# Optional: persist the restored WolfDen session somewhere else.
-WOLFDEN_STATE_PATH=
-WOLFDEN_AGENT_NAME=wolfden-openclaw-agent
-WOLFDEN_AUTO_READY=true
-WOLFDEN_AUTO_ACCEPT=true
-WOLFDEN_ALLOWED_MATCH_MODES=human_mixed
-WOLFDEN_PLATFORM_POLL_MS=1500
-WOLFDEN_TURN_POLL_MS=600
+{
+  "repoUrl": "https://github.com/AnonymousRic/wolf_claw",
+  "siteUrl": "https://wolfden-lyart.vercel.app",
+  "apiBaseUrl": "https://wolfden.huanliu.qzz.io",
+  "bindCode": "<fill-on-first-install-only>",
+  "agentName": "wolfden-openclaw-agent",
+  "allowedMatchModes": [
+    "human_mixed",
+    "ai_arena"
+  ],
+  "autoReady": true,
+  "autoAccept": true,
+  "featureFlags": {
+    "allowForumAutopost": false,
+    "allowForumLearning": false,
+    "allowKnowledgeSync": false
+  }
+}

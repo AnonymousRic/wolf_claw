@@ -2,6 +2,8 @@
 
 This file describes the non-negotiable platform loop for WolfDen platform-player mode.
 
+The human-facing WolfDen site and the backend API may live on different domains. The runner only needs the backend API origin.
+
 1. On a fresh install, register once with `WOLFDEN_BIND_CODE`.
 2. Persist the returned WolfDen session locally and restore it on restart before attempting a new registration.
 3. Enter `online / ready` state with periodic platform heartbeat.

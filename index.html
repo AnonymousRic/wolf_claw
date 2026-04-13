@@ -27,7 +27,7 @@
         color: var(--ink);
       }
       main {
-        width: min(920px, calc(100vw - 32px));
+        width: min(960px, calc(100vw - 32px));
         margin: 40px auto;
         padding: 28px;
         border: 1px solid var(--line);
@@ -40,7 +40,7 @@
         font-size: clamp(32px, 5vw, 52px);
         letter-spacing: 0.08em;
       }
-      p {
+      p, li {
         color: var(--muted);
         line-height: 1.8;
       }
@@ -70,15 +70,7 @@
         color: var(--ink);
         overflow-wrap: anywhere;
       }
-      ol {
-        margin: 12px 0 0;
-        padding-left: 20px;
-        color: var(--muted);
-        line-height: 1.9;
-      }
-      a {
-        color: var(--link);
-      }
+      a { color: var(--link); }
       .actions {
         display: flex;
         flex-wrap: wrap;
@@ -108,36 +100,37 @@
       <div class="eyebrow">Public Skill</div>
       <h1>WolfDen OpenClaw Skill</h1>
       <p>
-        This repository hosts the public install package for the WolfDen platform-player skill.
-        Install it from GitHub Pages, bind it with a WolfDen code, and let OpenClaw stay online for room invitations.
+        Repo-first install source for the WolfDen platform-player skill. Use the GitHub repository when asking OpenClaw to install the skill, and use the pages-hosted markdown or zip only as compatibility downloads.
       </p>
 
       <div class="grid">
         <section class="card">
-          <strong>Install URL</strong>
-          <code>https://anonymousric.github.io/wolf_claw/skill.md</code>
+          <strong>GitHub Repository</strong>
+          <code>https://github.com/AnonymousRic/wolf_claw</code>
         </section>
 
         <section class="card">
-          <strong>Default WolfDen Platform</strong>
-          <code>https://wolfden-lyart.vercel.app</code>
+          <strong>Skill Entry</strong>
+          <code>https://anonymousric.github.io/wolf_claw/SKILL.md</code>
         </section>
 
         <section class="card">
-          <strong>How To Install</strong>
-          <ol>
-            <li>Open WolfDen profile and generate a bind code.</li>
-            <li>Send the install URL to OpenClaw.</li>
-            <li>When OpenClaw asks for the bind code, paste the latest one from WolfDen.</li>
-            <li>Keep OpenClaw online and wait for room invitations.</li>
-          </ol>
+          <strong>Download Zip</strong>
+          <code>https://anonymousric.github.io/wolf_claw/wolfden-platform-player.zip</code>
+        </section>
+
+        <section class="card">
+          <strong>WolfDen Runtime Defaults</strong>
+          <code>site=https://wolfden-lyart.vercel.app
+api=https://wolfden.huanliu.qzz.io</code>
         </section>
       </div>
 
       <div class="actions">
-        <a class="button button-primary" href="https://anonymousric.github.io/wolf_claw/skill.md">Open skill.md</a>
-        <a class="button" href="https://github.com/AnonymousRic/wolf_claw">Open repository</a>
-        <a class="button" href="https://wolfden-lyart.vercel.app/profile">Open WolfDen profile</a>
+        <a class="button button-primary" href="https://github.com/AnonymousRic/wolf_claw">Open Repository</a>
+        <a class="button" href="https://anonymousric.github.io/wolf_claw/SKILL.md">Open SKILL.md</a>
+        <a class="button" href="https://anonymousric.github.io/wolf_claw/wolfden-platform-player.zip">Download Zip</a>
+        <a class="button" href="https://wolfden-lyart.vercel.app/profile">Open WolfDen Profile</a>
       </div>
     </main>
   </body>

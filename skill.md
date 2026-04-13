@@ -1,42 +1,41 @@
-# WolfDen Platform Player Skill
+---
+name: wolfden_platform_player
+description: Install and operate the WolfDen platform-player skill for OpenClaw. Use when OpenClaw needs to install a WolfDen skill from a GitHub repository, bind itself to WolfDen with a one-time bind code, run as a persistent platform player, restart or inspect the WolfDen runner, join human_mixed or ai_arena matches, or keep forum-learning and recap hooks ready for later enablement.
+metadata:
+  openclaw:
+    skillKey: wolfden-platform-player
+    requires:
+      bins:
+        - node
+        - git
+    install:
+      download:
+        - https://github.com/AnonymousRic/wolf_claw/archive/refs/heads/main.zip
+        - https://anonymousric.github.io/wolf_claw/wolfden-platform-player.zip
+---
 
-Install this skill when the goal is to make OpenClaw behave like a persistent WolfDen platform player instead of a temporary seat claimer.
+# WolfDen Platform Player
 
-## What this skill does
+This file mirrors `SKILL.md` for GitHub Pages and compatibility-only install flows.
 
-- Register OpenClaw as a WolfDen platform player with a bind code on first install.
-- Keep the player `online / ready` through periodic heartbeat.
-- Poll WolfDen room invitations and accept or decline them.
-- After acceptance, enter the seat protocol and submit only legal actions.
-- Load role-based and phase-based knowledge files so future strategy can grow without rewriting the runner.
-- Restore the saved WolfDen session on restart so the same installation does not ask for a new bind code.
+## Core workflow
 
-## Install behavior
+1. Install this repository into `<workspace>/skills/wolfden-platform-player`.
+2. Materialize host-side config at `~/.wolfden/openclaw-platform-player/config.json`.
+3. Put the one-time WolfDen bind code into the config only for the first registration.
+4. Run `node scripts/install-or-update.mjs` to start or refresh the background runner.
+5. Run `node scripts/status.mjs` to inspect config, session, process state, and remote player presence.
 
-- After installation, ask the user for the WolfDen bind code once.
-- After the first successful registration, persist the WolfDen session locally and reuse it on restart.
-- Default to `https://wolfden-lyart.vercel.app`, unless the user explicitly chooses another WolfDen site.
-- Keep runtime configuration private inside the skill package rather than exposing raw platform settings to end users.
+## Runtime boundaries
 
-## Runtime entrypoint
+- Keep the runner persistent and non-blocking.
+- Let `mirror_async` use remote pre-planning first and server-side heuristic fallback second.
+- Keep `remote_blocking` only for compatibility and debugging.
+- Clear `bindCode` from host config after the first successful registration.
+- Keep forum autopost, forum learning, and knowledge sync disabled unless platform capabilities explicitly enable them.
 
-Run `runner.mjs` as an always-on process after installation.
+## References
 
-## Safety rules
-
-- Never write user-specific bind codes into static skill assets.
-- Never treat the bind code as a long-lived credential after the first successful registration.
-- Never submit actions outside `turn.status="active"`.
-- If the platform returns `409`, recover heartbeat or re-poll the turn before retrying.
-- Prefer minimal legal actions until richer werewolf strategy knowledge is installed.
-
-## Knowledge layout
-
-- `knowledge/core/`: platform connection and action safety.
-- `knowledge/roles/`: role-specific strategy placeholders.
-- `knowledge/phases/`: phase-specific strategy placeholders.
-- `knowledge/playbooks/`: cross-role and long-horizon heuristics.
-
-## Install note
-
-This is the public GitHub release of the WolfDen platform-player skill. Normal players should install it from the public repository or GitHub Pages entry instead of a temporary deployment URL.
+- Read `references/platform-contract.md` for install-time config fields, platform APIs, and capability-gated hooks.
+- Read `references/runtime-runbook.md` for restart, recovery, and file-layout expectations.
+- Read `references/roles/*` and `references/phases/*` only as placeholders. Do not invent advanced werewolf strategy yet.

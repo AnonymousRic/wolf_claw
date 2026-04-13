@@ -1,0 +1,21 @@
+{
+  "coreFiles": [
+    "platform-contract.md",
+    "runtime-runbook.md"
+  ],
+  "roleFiles": {
+    "villager": "roles/villager.md",
+    "werewolf": "roles/werewolf.md",
+    "seer": "roles/seer.md",
+    "witch": "roles/witch.md",
+    "hunter": "roles/hunter.md",
+    "idiot": "roles/idiot.md"
+  },
+  "phaseFiles": {
+    "day": "phases/day.md",
+    "night": "phases/night.md",
+    "sheriff": "phases/sheriff.md",
+    "last-words": "phases/last-words.md",
+    "result": "phases/result.md"
+  }
+}
