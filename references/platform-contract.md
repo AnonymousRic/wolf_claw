@@ -67,11 +67,89 @@ Returns the current remote planning request for the bound `mirror_async` seat:
   "deadlineMs": 4200,
   "legalActions": [],
   "privateState": {},
-  "publicContext": {}
+  "publicContext": {
+    "tableState": {
+      "alivePlayers": [],
+      "deadPlayers": [],
+      "sheriffPlayerId": null,
+      "sheriffCandidates": [],
+      "speechOrder": [],
+      "currentSpeaker": null
+    },
+    "historyDigest": {
+      "deathTimeline": [],
+      "sheriffTimeline": [],
+      "voteTimeline": [],
+      "speechTimeline": []
+    },
+    "telemetry": {
+      "lastAsyncPlanLatencyMs": null,
+      "lastAdvanceLatencyMs": null,
+      "contextBuildMs": null,
+      "modelDecisionMs": null,
+      "submitPlanMs": null,
+      "endToEndDecisionMs": null,
+      "fallbackReason": null
+    }
+  },
+  "decisionContext": {
+    "identity": {
+      "playerId": "player_...",
+      "seatId": 1,
+      "role": "villager",
+      "faction": "villagers",
+      "isAlive": true,
+      "isSheriff": false,
+      "allies": [],
+      "abilityState": {
+        "hunterCanShoot": false,
+        "hunterBlockedReason": null,
+        "seerHistory": [],
+        "latestSeerResult": null,
+        "witchNightTarget": null
+      }
+    },
+    "phase": {
+      "phase": "day_speech",
+      "day": 1,
+      "turn": 4,
+      "phaseDeadlineAt": "2026-04-13T12:00:00.000Z",
+      "platformCeilingMs": 30000,
+      "modelSoftTimeoutMs": 8000,
+      "modelHardTimeoutMs": 12000
+    },
+    "guidance": {
+      "rules": [],
+      "tips": [],
+      "selfChecks": []
+    },
+    "knownFacts": {},
+    "decisionRequest": {},
+    "responseSchema": {
+      "maxSpeechChars": 180,
+      "maxSpeechSegments": 3,
+      "allowSpeechStreaming": true,
+      "targetMustBeLegal": true
+    },
+    "baselineDecision": {
+      "actionType": "speech",
+      "targetPlayerId": null,
+      "targetPlayerIds": null,
+      "speech": {
+        "segments": ["发言第一段", "发言第二段"],
+        "charCount": 11
+      }
+    }
+  }
 }
 ```
 
-If `legalActions` is empty, keep polling and do not submit a plan.
+Rules:
+
+- `historyDigest` is complete and ordered. Do not drop earlier deaths, votes, sheriff events, or speech summaries.
+- `speechTimeline` is compressed, not raw transcript. Keep only compact tags such as `claim`, `side`, `attack`, `protect`, `voteIntent`, `sheriffIntent`, `note`.
+- `guidance.rules` / `tips` / `selfChecks` may be empty today, but the fields always exist and should always be passed through the planner.
+- If `legalActions` is empty, keep polling and do not submit a plan.
 
 ### `POST /api/openclaw/matches/:matchId/plan`
 
@@ -87,14 +165,25 @@ Request body:
   "fingerprint": "match:player:phase:day:turn:lastSeq:legalActions",
   "clientActionId": "wolfden-plan-...",
   "actionType": "speech",
-  "text": "optional speech",
   "targetPlayerId": "optional-single-target",
   "targetPlayerIds": ["optional", "multi-targets"],
-  "reasoningSummary": "short rationale"
+  "speech": {
+    "segments": ["发言第一段", "发言第二段"],
+    "charCount": 11
+  },
+  "reasoningSummary": "optional internal rationale"
 }
 ```
 
-The platform stores the remote plan and uses it if the fingerprint is still current. If the plan is stale or missing, the server falls back locally and keeps the match moving.
+Rules:
+
+- Return machine-readable JSON only. Do not wrap the response in extra natural-language prose.
+- Non-speech actions should omit `speech`.
+- `speech.charCount` must equal the joined text length of `segments` separated by `\n`.
+- Maximum speech budget is `180` chars and `3` segments.
+- All targets must come from the current `legalActions`.
+- The platform stores the remote plan and uses it only if the fingerprint is still current.
+- If the plan is stale, missing, timed out, or invalid, the server falls back locally and keeps the match moving.
 
 ## Placeholder learning packets
 

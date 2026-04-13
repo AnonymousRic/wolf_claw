@@ -23,8 +23,10 @@ import {
   saveSession,
   sleep,
 } from './common.mjs';
-
-const ROLE_FALLBACK = 'villager';
+import {
+  buildMirrorPlanPayload,
+  buildSeatAction,
+} from './planner.mjs';
 
 function resolvePhaseReferenceKey(phase) {
   if (!phase) {
@@ -100,101 +102,13 @@ async function loadReferenceBundle() {
   };
 }
 
-function pickPrimaryLegalAction(legalActions) {
-  return legalActions.find((action) => action.actionType !== 'pass') ?? legalActions[0] ?? null;
-}
-
-function buildMinimalSpeech(phase) {
-  if (phase === 'sheriff_speech') {
-    return 'I will keep the room stable first and update after more public information appears.';
-  }
-  if (phase === 'day_speech' || phase === 'day_pk_speech' || phase === 'last_words') {
-    return 'Current information is still limited. I will keep observing speech order and vote flow.';
-  }
-  return 'Proceed with the current legal action and keep the platform loop stable.';
-}
-
 function summarizeReferenceSelection(referenceBundle, role, phase) {
-  const roleDocument = referenceBundle.roleDocuments[role] ?? referenceBundle.roleDocuments[ROLE_FALLBACK] ?? null;
+  const roleDocument = referenceBundle.roleDocuments[role] ?? referenceBundle.roleDocuments.villager ?? null;
   const phaseDocument = referenceBundle.phaseDocuments[resolvePhaseReferenceKey(phase)] ?? null;
 
   return {
     rolePath: roleDocument?.path ?? 'roles/villager.md',
     phasePath: phaseDocument?.path ?? 'phases/day.md',
-  };
-}
-
-function buildMinimalSeatAction(turn) {
-  const action = pickPrimaryLegalAction(turn.legalActions);
-  if (!action) {
-    throw new Error(`No legal actions available for turn ${turn.turnId}.`);
-  }
-
-  const payload = {
-    clientActionId: `wolfden-seat-${Date.now()}`,
-    actionType: action.actionType,
-  };
-
-  if (action.allowedTargetIds.length > 0) {
-    if (action.maxTargetCount > 1) {
-      return {
-        ...payload,
-        targetPlayerIds: action.allowedTargetIds.slice(0, Math.max(1, action.minTargetCount || 0)),
-        ...(action.minTextLength > 0 ? { text: buildMinimalSpeech(turn.phase) } : {}),
-      };
-    }
-
-    return {
-      ...payload,
-      targetPlayerId: action.allowedTargetIds[0],
-      ...(action.minTextLength > 0 ? { text: buildMinimalSpeech(turn.phase) } : {}),
-    };
-  }
-
-  return {
-    ...payload,
-    ...(action.minTextLength > 0 ? { text: buildMinimalSpeech(turn.phase) } : {}),
-  };
-}
-
-function buildMinimalMirrorPlan(planRequest, referenceBundle) {
-  const action = pickPrimaryLegalAction(planRequest.legalActions);
-  if (!action) {
-    return null;
-  }
-
-  const { rolePath, phasePath } = summarizeReferenceSelection(
-    referenceBundle,
-    planRequest.privateState?.role ?? ROLE_FALLBACK,
-    planRequest.phase,
-  );
-  const payload = {
-    requestId: planRequest.requestId,
-    fingerprint: planRequest.fingerprint,
-    clientActionId: `wolfden-plan-${Date.now()}`,
-    actionType: action.actionType,
-    reasoningSummary: `Use the safest current legal action while WolfDen-specific werewolf strategy remains placeholder-only. roleRef=${rolePath} phaseRef=${phasePath}.`,
-  };
-
-  if (action.allowedTargetIds.length > 0) {
-    if (action.maxTargetCount > 1) {
-      return {
-        ...payload,
-        targetPlayerIds: action.allowedTargetIds.slice(0, Math.max(1, action.minTargetCount || 0)),
-        ...(action.minTextLength > 0 ? { text: buildMinimalSpeech(planRequest.phase) } : {}),
-      };
-    }
-
-    return {
-      ...payload,
-      targetPlayerId: action.allowedTargetIds[0],
-      ...(action.minTextLength > 0 ? { text: buildMinimalSpeech(planRequest.phase) } : {}),
-    };
-  }
-
-  return {
-    ...payload,
-    ...(action.minTextLength > 0 ? { text: buildMinimalSpeech(planRequest.phase) } : {}),
   };
 }
 
@@ -371,11 +285,17 @@ async function refreshMirrorAsyncPlan({
     return;
   }
 
-  const payload = buildMinimalMirrorPlan(planRequest, referenceBundle);
+  const { rolePath, phasePath } = summarizeReferenceSelection(
+    referenceBundle,
+    planRequest.privateState?.role ?? 'villager',
+    planRequest.phase,
+  );
+  const payload = buildMirrorPlanPayload(planRequest);
   if (!payload) {
     return;
   }
 
+  const startedAt = Date.now();
   try {
     const submitted = await submitMirrorPlan(config.apiBaseUrl, matchId, sessionToken, payload);
     planCache.set(cacheKey, submitted.fingerprint);
@@ -384,6 +304,9 @@ async function refreshMirrorAsyncPlan({
       playerId: planRequest.playerId,
       phase: planRequest.phase,
       fingerprint: submitted.fingerprint,
+      planningLatencyMs: Date.now() - startedAt,
+      roleRef: rolePath,
+      phaseRef: phasePath,
     });
   } catch (error) {
     if (error instanceof HttpError && error.statusCode === 409) {
@@ -515,7 +438,7 @@ async function playAcceptedInvitation(
         continue;
       }
 
-      const action = buildMinimalSeatAction(turn);
+      const action = buildSeatAction(turn);
       try {
         await submitSeatAction(config.apiBaseUrl, seatId, {
           seatToken,
