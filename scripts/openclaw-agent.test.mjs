@@ -1,8 +1,12 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import assert from 'node:assert/strict';
 import process from 'node:process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  __resetOpenclawCompatCacheForTests,
   buildMirrorPlanFromOpenclaw,
   checkOpenclawRuntimeHealth,
 } from './openclaw-agent.mjs';
@@ -10,11 +14,13 @@ import {
 const fixturePath = fileURLToPath(new URL('../../../../../../tests/fixtures/fake-openclaw.mjs', import.meta.url));
 
 function withFakeOpenclawEnv(overrides, callback) {
+  __resetOpenclawCompatCacheForTests();
   const previous = {
     WOLFDEN_OPENCLAW_BIN: process.env.WOLFDEN_OPENCLAW_BIN,
     WOLFDEN_OPENCLAW_BIN_ARGS: process.env.WOLFDEN_OPENCLAW_BIN_ARGS,
     WOLFDEN_FAKE_OPENCLAW_MODE: process.env.WOLFDEN_FAKE_OPENCLAW_MODE,
     WOLFDEN_FAKE_OPENCLAW_RESPONSE_SHAPE: process.env.WOLFDEN_FAKE_OPENCLAW_RESPONSE_SHAPE,
+    WOLFDEN_FAKE_OPENCLAW_RECORD_PATH: process.env.WOLFDEN_FAKE_OPENCLAW_RECORD_PATH,
   };
 
   process.env.WOLFDEN_OPENCLAW_BIN = process.execPath;
@@ -24,6 +30,9 @@ function withFakeOpenclawEnv(overrides, callback) {
   }
   if ('WOLFDEN_FAKE_OPENCLAW_RESPONSE_SHAPE' in overrides) {
     process.env.WOLFDEN_FAKE_OPENCLAW_RESPONSE_SHAPE = overrides.WOLFDEN_FAKE_OPENCLAW_RESPONSE_SHAPE;
+  }
+  if ('WOLFDEN_FAKE_OPENCLAW_RECORD_PATH' in overrides) {
+    process.env.WOLFDEN_FAKE_OPENCLAW_RECORD_PATH = overrides.WOLFDEN_FAKE_OPENCLAW_RECORD_PATH;
   }
 
   return Promise.resolve()
@@ -88,7 +97,6 @@ function createPlanRequest() {
         aliveWolves: 4,
         sheriffPlayerId: null,
       },
-      players: [],
       tableState: {
         alivePlayers: [],
         deadPlayers: [],
@@ -96,6 +104,14 @@ function createPlanRequest() {
         sheriffCandidates: [],
         speechOrder: [],
         currentSpeaker: 'player-9',
+      },
+      backgroundDigest: {
+        matchId: 'match-1',
+        phase: 'day_speech',
+        day: 1,
+        turn: 2,
+        visibleEventCount: 0,
+        recentPublicEvents: [],
       },
       historyDigest: {
         deathTimeline: [],
@@ -116,6 +132,9 @@ function createPlanRequest() {
         modelDecisionMs: null,
         submitPlanMs: null,
         endToEndDecisionMs: null,
+        currentCheckpointId: 'ocplan:fingerprint-1',
+        currentFingerprint: 'fingerprint-1',
+        currentStatus: 'waiting_remote',
       },
     },
     decisionContext: {
@@ -269,6 +288,47 @@ test('buildMirrorPlanFromOpenclaw retries once without idempotencyKey when the C
 
     assert.equal(result.payload.actionType, 'speech');
   });
+});
+
+test('buildMirrorPlanFromOpenclaw caches the compat downgrade after the first idempotencyKey rejection', async () => {
+  const recordDir = await mkdtemp(path.join(tmpdir(), 'wolfden-openclaw-agent-'));
+  const recordPath = path.join(recordDir, 'requests.ndjson');
+
+  await withFakeOpenclawEnv({
+    WOLFDEN_FAKE_OPENCLAW_MODE: 'reject-idempotency-key',
+    WOLFDEN_FAKE_OPENCLAW_RECORD_PATH: recordPath,
+  }, async () => {
+    await buildMirrorPlanFromOpenclaw({
+      config: {
+        agentName: 'unit-openclaw',
+        openclawAgentId: 'main',
+        openclawThinking: 'medium',
+      },
+      openclawPlayerId: 'oc-player-1',
+      planRequest: createPlanRequest(),
+      referenceBundle,
+    });
+
+    await buildMirrorPlanFromOpenclaw({
+      config: {
+        agentName: 'unit-openclaw',
+        openclawAgentId: 'main',
+        openclawThinking: 'medium',
+      },
+      openclawPlayerId: 'oc-player-1',
+      planRequest: createPlanRequest(),
+      referenceBundle,
+    });
+  });
+
+  const records = (await readFile(recordPath, 'utf8'))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+
+  assert.equal(records.length, 3);
+  assert.equal(records.filter((record) => typeof record.params?.idempotencyKey === 'string').length, 1);
 });
 
 test('buildMirrorPlanFromOpenclaw retries once without agentId when the CLI rejects it', async () => {

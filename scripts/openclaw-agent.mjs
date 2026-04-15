@@ -7,6 +7,11 @@ import {
 
 const OPENCLAW_MAX_SPEECH_CHARS = 180;
 const OPENCLAW_MAX_SPEECH_SEGMENTS = 3;
+const compatRejectedParamKeys = new Set();
+
+export function __resetOpenclawCompatCacheForTests() {
+  compatRejectedParamKeys.clear();
+}
 
 function compactText(text) {
   return String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -98,10 +103,12 @@ function buildMirrorPrompt(planRequest, referenceBundle) {
     legalActions: planRequest.legalActions,
     privateState: planRequest.privateState,
     publicContext: {
+      matchId: planRequest.publicContext?.backgroundDigest?.matchId ?? planRequest.matchId,
       day: planRequest.publicContext?.day ?? null,
       turn: planRequest.publicContext?.turn ?? null,
       scoreboard: planRequest.publicContext?.scoreboard ?? null,
       tableState: planRequest.publicContext?.tableState ?? null,
+      backgroundDigest: planRequest.publicContext?.backgroundDigest ?? null,
       historyDigest: planRequest.publicContext?.historyDigest ?? null,
     },
     decisionContext: planRequest.decisionContext,
@@ -259,14 +266,19 @@ function buildIdempotencyKey(...parts) {
 }
 
 function buildAgentParams({ config, prompt, sessionKey, idempotencyKey }) {
-  return {
+  const params = {
     message: prompt,
     sessionKey,
     deliver: false,
     thinking: config?.openclawThinking || DEFAULT_OPENCLAW_THINKING,
-    agentId: config?.openclawAgentId || DEFAULT_OPENCLAW_AGENT_ID,
-    idempotencyKey,
   };
+  if (!compatRejectedParamKeys.has('agentId')) {
+    params.agentId = config?.openclawAgentId || DEFAULT_OPENCLAW_AGENT_ID;
+  }
+  if (!compatRejectedParamKeys.has('idempotencyKey')) {
+    params.idempotencyKey = idempotencyKey;
+  }
+  return params;
 }
 
 function resolveCompatDowngradeKeys(error) {
@@ -295,6 +307,7 @@ async function callOpenclawGatewayWithCompat(params, timeoutSeconds) {
 
     const downgradedParams = { ...params };
     for (const key of rejectedKeys) {
+      compatRejectedParamKeys.add(key);
       delete downgradedParams[key];
     }
     return callOpenclawGateway(downgradedParams, timeoutSeconds);

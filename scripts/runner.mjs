@@ -127,6 +127,128 @@ async function getCapabilities(apiBaseUrl) {
   }
 }
 
+function buildMatchSocketUrl(apiBaseUrl) {
+  const url = new URL(normalizeBaseUrl(apiBaseUrl));
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '/ws';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
+
+function extractActionableCheckpointFromRoom(room) {
+  const sync = room?.openclawSync;
+  if (!sync || sync.requiresDecision !== true || !sync.checkpointId || !sync.fingerprint || !sync.matchId) {
+    return null;
+  }
+  return {
+    matchId: sync.matchId,
+    checkpointId: sync.checkpointId,
+    fingerprint: sync.fingerprint,
+    phase: sync.phase ?? room?.phase ?? null,
+  };
+}
+
+function extractActionableCheckpointFromSnapshot(snapshot) {
+  const telemetry = snapshot?.openclawTelemetry;
+  if (!telemetry?.currentCheckpointId || !telemetry?.currentFingerprint) {
+    return null;
+  }
+  if (telemetry.currentStatus === 'idle' || telemetry.currentStatus === 'stale_after_fallback') {
+    return null;
+  }
+  return {
+    matchId: snapshot.matchId,
+    checkpointId: telemetry.currentCheckpointId,
+    fingerprint: telemetry.currentFingerprint,
+    phase: snapshot.phase ?? null,
+  };
+}
+
+function createMatchSnapshotSubscription({ apiBaseUrl, matchId, logger, onCheckpoint }) {
+  if (typeof WebSocket !== 'function') {
+    return {
+      close() {},
+    };
+  }
+
+  let socket = null;
+  let reconnectTimer = null;
+  let closed = false;
+
+  const connect = () => {
+    if (closed) {
+      return;
+    }
+
+    try {
+      socket = new WebSocket(buildMatchSocketUrl(apiBaseUrl));
+    } catch (error) {
+      void logger.warn('Failed to open WolfDen websocket subscription.', {
+        matchId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      reconnectTimer = setTimeout(connect, 1000);
+      return;
+    }
+
+    socket.addEventListener('open', () => {
+      socket?.send(JSON.stringify({
+        type: 'subscribe',
+        matchId,
+      }));
+    });
+
+    socket.addEventListener('message', (event) => {
+      try {
+        const envelope = JSON.parse(String(event.data ?? ''));
+        if (envelope?.type === 'match.snapshot' && envelope.snapshot?.matchId === matchId) {
+          onCheckpoint(extractActionableCheckpointFromSnapshot(envelope.snapshot));
+        }
+        if (envelope?.type === 'match.finished' && envelope.snapshot?.matchId === matchId) {
+          onCheckpoint(null);
+        }
+      } catch (error) {
+        void logger.warn('Failed to parse WolfDen websocket payload.', {
+          matchId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+
+    socket.addEventListener('close', () => {
+      if (closed) {
+        return;
+      }
+      reconnectTimer = setTimeout(connect, 1000);
+    });
+
+    socket.addEventListener('error', () => {
+      try {
+        socket?.close();
+      } catch {
+        // Ignore the close failure and let the reconnect timer handle recovery.
+      }
+    });
+  };
+
+  connect();
+
+  return {
+    close() {
+      closed = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+      try {
+        socket?.close();
+      } catch {
+        // Ignore close errors during shutdown.
+      }
+    },
+  };
+}
+
 async function getMirrorPlanRequest(apiBaseUrl, matchId, sessionToken) {
   return requestJson(apiBaseUrl, `/api/openclaw/matches/${matchId}/plan-request`, {
     headers: { 'x-openclaw-session': sessionToken },
@@ -281,6 +403,7 @@ async function refreshMirrorAsyncPlan({
   matchId,
   referenceBundle,
   planCache,
+  inFlightPlans,
   logger,
   updateRuntimeState,
 }) {
@@ -303,8 +426,13 @@ async function refreshMirrorAsyncPlan({
   if (planCache.get(cacheKey) === planRequest.fingerprint) {
     return nextPollMs;
   }
+  const inFlightKey = `${cacheKey}:${planRequest.fingerprint}`;
+  if (inFlightPlans.has(inFlightKey)) {
+    return nextPollMs;
+  }
 
   const startedAt = Date.now();
+  inFlightPlans.add(inFlightKey);
   try {
     const remotePlan = await buildMirrorPlanFromOpenclaw({
       config,
@@ -353,6 +481,8 @@ async function refreshMirrorAsyncPlan({
       phase: planRequest.phase,
       message,
     });
+  } finally {
+    inFlightPlans.delete(inFlightKey);
   }
 
   return nextPollMs;
@@ -373,6 +503,7 @@ async function playAcceptedInvitation(
 ) {
   const seatId = invitation.seatId;
   const planCache = new Map();
+  const inFlightPlans = new Set();
   let stopped = false;
 
   const heartbeatLoop = (async () => {
@@ -401,9 +532,36 @@ async function playAcceptedInvitation(
     await heartbeatSeat(config.apiBaseUrl, seatToken);
 
     if (executionMode === 'mirror_async') {
+      let activeMatchId = null;
+      let matchSubscription = null;
+      const requestMirrorPlan = async (matchId) => refreshMirrorAsyncPlan({
+        config,
+        sessionToken,
+        openclawPlayerId,
+        matchId,
+        referenceBundle,
+        planCache,
+        inFlightPlans,
+        logger,
+        updateRuntimeState,
+      });
+      const handleCheckpoint = (checkpoint) => {
+        if (!checkpoint || checkpoint.matchId !== activeMatchId) {
+          return;
+        }
+        void requestMirrorPlan(checkpoint.matchId).catch(async (error) => {
+          await logger.warn('OpenClaw mirror_async checkpoint refresh failed.', {
+            matchId: checkpoint.matchId,
+            phase: checkpoint.phase,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        });
+      };
+
       while (true) {
         const room = await getRoom(config.apiBaseUrl, invitation.roomId);
         if (room.status === 'finished') {
+          matchSubscription?.close();
           await logger.info('mirror_async room finished.', {
             roomId: invitation.roomId,
             matchId: room.matchId ?? null,
@@ -417,18 +575,21 @@ async function playAcceptedInvitation(
           break;
         }
 
-        let pollMs = config.platformPollMs;
-        if (room.matchId) {
-          pollMs = await refreshMirrorAsyncPlan({
-            config,
-            sessionToken,
-            openclawPlayerId,
+        if (room.matchId && room.matchId !== activeMatchId) {
+          matchSubscription?.close();
+          activeMatchId = room.matchId;
+          matchSubscription = createMatchSnapshotSubscription({
+            apiBaseUrl: config.apiBaseUrl,
             matchId: room.matchId,
-            referenceBundle,
-            planCache,
             logger,
-            updateRuntimeState,
+            onCheckpoint: handleCheckpoint,
           });
+        }
+
+        let pollMs = config.platformPollMs;
+        const roomCheckpoint = extractActionableCheckpointFromRoom(room);
+        if (room.matchId && roomCheckpoint) {
+          pollMs = await requestMirrorPlan(room.matchId);
         }
 
         await sleep(room.matchId ? pollMs : config.platformPollMs);
