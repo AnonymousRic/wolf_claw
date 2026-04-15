@@ -3,6 +3,7 @@ import {
   DEFAULT_CAPABILITIES,
   createLogger,
   loadProcessRecord,
+  loadRuntimeState,
   loadSession,
   loadSkillConfig,
   parseArgs,
@@ -17,6 +18,7 @@ async function main() {
   const config = await loadSkillConfig(paths.configPath);
   const session = await loadSession(paths.sessionPath);
   const processRecord = await loadProcessRecord(paths.processPath);
+  const runtimeState = await loadRuntimeState(paths.runtimeStatePath);
 
   let capabilities = { ...DEFAULT_CAPABILITIES };
   let remoteProfile = null;
@@ -53,6 +55,7 @@ async function main() {
     config,
     session,
     process: processRecord,
+    runtimeState,
     capabilities,
     remotePlayer,
   }, null, 2));

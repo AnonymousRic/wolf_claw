@@ -1,3 +1,7 @@
+// Legacy legality-first heuristics kept only for debugging and emergency comparison.
+// The production OpenClaw skill path now goes through openclaw-agent.mjs and
+// `openclaw gateway call agent --expect-final --json` instead of using this file.
+
 function hashText(input) {
   let hash = 0;
   for (const char of String(input ?? '')) {

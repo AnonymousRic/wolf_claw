@@ -6,10 +6,13 @@ import process from 'node:process';
 export const CONFIG_SCHEMA_VERSION = 1;
 export const SESSION_SCHEMA_VERSION = 2;
 export const PROCESS_SCHEMA_VERSION = 1;
+export const RUNTIME_STATE_SCHEMA_VERSION = 1;
 export const DEFAULT_REPO_URL = 'https://github.com/AnonymousRic/wolf_claw';
 export const DEFAULT_SITE_URL = 'https://wolfden-lyart.vercel.app';
 export const DEFAULT_API_BASE_URL = 'https://wolfden.huanliu.qzz.io';
 export const DEFAULT_AGENT_NAME = 'wolfden-openclaw-agent';
+export const DEFAULT_OPENCLAW_AGENT_ID = 'main';
+export const DEFAULT_OPENCLAW_THINKING = 'medium';
 export const DEFAULT_ALLOWED_MATCH_MODES = ['human_mixed', 'ai_arena'];
 export const DEFAULT_FEATURE_FLAGS = {
   allowForumAutopost: false,
@@ -148,6 +151,7 @@ export function resolveRunnerPaths(configPathArg) {
     sessionPath: path.join(hostStateDir, 'session.json'),
     logPath: path.join(hostStateDir, 'runner.log'),
     processPath: path.join(hostStateDir, 'process.json'),
+    runtimeStatePath: path.join(hostStateDir, 'runtime-state.json'),
   };
 }
 
@@ -196,6 +200,7 @@ function normalizeFeatureFlags(raw) {
 
 export function normalizeSkillConfig(raw) {
   const source = isObject(raw) ? raw : {};
+  const normalizedTimeoutSeconds = Number(source.openclawTimeoutSeconds);
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     repoUrl: isNonEmptyString(source.repoUrl) ? source.repoUrl.trim() : DEFAULT_REPO_URL,
@@ -206,6 +211,15 @@ export function normalizeSkillConfig(raw) {
     allowedMatchModes: normalizeArrayStrings(source.allowedMatchModes, DEFAULT_ALLOWED_MATCH_MODES),
     autoReady: source.autoReady !== false,
     autoAccept: source.autoAccept !== false,
+    openclawAgentId: isNonEmptyString(source.openclawAgentId)
+      ? source.openclawAgentId.trim()
+      : DEFAULT_OPENCLAW_AGENT_ID,
+    openclawThinking: isNonEmptyString(source.openclawThinking)
+      ? source.openclawThinking.trim()
+      : DEFAULT_OPENCLAW_THINKING,
+    openclawTimeoutSeconds: Number.isFinite(normalizedTimeoutSeconds) && normalizedTimeoutSeconds > 0
+      ? Math.round(normalizedTimeoutSeconds)
+      : null,
     featureFlags: normalizeFeatureFlags(source.featureFlags),
   };
 }
@@ -323,6 +337,55 @@ export async function saveProcessRecord(processPath, processRecord) {
   await mkdir(path.dirname(processPath), { recursive: true });
   await writeFile(processPath, `${JSON.stringify(nextRecord, null, 2)}\n`, 'utf8');
   return nextRecord;
+}
+
+export function normalizeRuntimeState(raw) {
+  if (!isObject(raw)) {
+    return {
+      schemaVersion: RUNTIME_STATE_SCHEMA_VERSION,
+      openclawRuntimeHealthy: false,
+      ready: false,
+      lastHealthcheckAt: null,
+      lastHealthcheckError: null,
+      lastRunAt: null,
+      lastRunLatencyMs: null,
+      lastPlanSource: null,
+      lastFailureReason: null,
+      lastMatchId: null,
+      lastPhase: null,
+      lastActionType: null,
+    };
+  }
+
+  return {
+    schemaVersion: RUNTIME_STATE_SCHEMA_VERSION,
+    openclawRuntimeHealthy: raw.openclawRuntimeHealthy === true,
+    ready: raw.ready === true,
+    lastHealthcheckAt: isNonEmptyString(raw.lastHealthcheckAt) ? raw.lastHealthcheckAt : null,
+    lastHealthcheckError: isNonEmptyString(raw.lastHealthcheckError) ? raw.lastHealthcheckError : null,
+    lastRunAt: isNonEmptyString(raw.lastRunAt) ? raw.lastRunAt : null,
+    lastRunLatencyMs: typeof raw.lastRunLatencyMs === 'number' ? raw.lastRunLatencyMs : null,
+    lastPlanSource: isNonEmptyString(raw.lastPlanSource) ? raw.lastPlanSource : null,
+    lastFailureReason: isNonEmptyString(raw.lastFailureReason) ? raw.lastFailureReason : null,
+    lastMatchId: isNonEmptyString(raw.lastMatchId) ? raw.lastMatchId : null,
+    lastPhase: isNonEmptyString(raw.lastPhase) ? raw.lastPhase : null,
+    lastActionType: isNonEmptyString(raw.lastActionType) ? raw.lastActionType : null,
+  };
+}
+
+export async function loadRuntimeState(runtimeStatePath) {
+  const raw = await readJsonFile(runtimeStatePath);
+  return normalizeRuntimeState(raw);
+}
+
+export async function saveRuntimeState(runtimeStatePath, runtimeState) {
+  const nextState = normalizeRuntimeState({
+    schemaVersion: RUNTIME_STATE_SCHEMA_VERSION,
+    ...runtimeState,
+  });
+  await mkdir(path.dirname(runtimeStatePath), { recursive: true });
+  await writeFile(runtimeStatePath, `${JSON.stringify(nextState, null, 2)}\n`, 'utf8');
+  return nextState;
 }
 
 export function createSessionId(prefix = 'session') {

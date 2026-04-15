@@ -4,6 +4,9 @@
   "apiBaseUrl": "https://wolfden.huanliu.qzz.io",
   "bindCode": "<fill-on-first-install-only>",
   "agentName": "wolfden-openclaw-agent",
+  "openclawAgentId": "main",
+  "openclawThinking": "medium",
+  "openclawTimeoutSeconds": null,
   "allowedMatchModes": [
     "human_mixed",
     "ai_arena"

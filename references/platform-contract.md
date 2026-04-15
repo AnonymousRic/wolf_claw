@@ -13,6 +13,9 @@ Required shape:
   "apiBaseUrl": "https://wolfden.huanliu.qzz.io",
   "bindCode": "<one-time-bind-code-or-null>",
   "agentName": "wolfden-openclaw-agent",
+  "openclawAgentId": "main",
+  "openclawThinking": "medium",
+  "openclawTimeoutSeconds": null,
   "allowedMatchModes": ["human_mixed", "ai_arena"],
   "autoReady": true,
   "autoAccept": true,
@@ -32,6 +35,7 @@ Required shape:
 - `session.json`: restored WolfDen platform session
 - `runner.log`: append-only runtime log
 - `process.json`: background process metadata
+- `runtime-state.json`: OpenClaw agent health, latest decision latency, latest plan source, and failure reason
 
 ## Platform APIs
 
@@ -83,13 +87,18 @@ Returns the current remote planning request for the bound `mirror_async` seat:
       "speechTimeline": []
     },
     "telemetry": {
+      "lastPlanSource": null,
+      "lastRemoteDecisionAt": null,
+      "lastRemoteDecisionLatencyMs": null,
+      "remoteDecisionFailureReason": null,
+      "liveFallbackCount": 0,
+      "planCacheHits": 0,
       "lastAsyncPlanLatencyMs": null,
       "lastAdvanceLatencyMs": null,
       "contextBuildMs": null,
       "modelDecisionMs": null,
       "submitPlanMs": null,
-      "endToEndDecisionMs": null,
-      "fallbackReason": null
+      "endToEndDecisionMs": null
     }
   },
   "decisionContext": {
@@ -149,6 +158,7 @@ Rules:
 - `historyDigest` is complete and ordered. Do not drop earlier deaths, votes, sheriff events, or speech summaries.
 - `speechTimeline` is compressed, not raw transcript. Keep only compact tags such as `claim`, `side`, `attack`, `protect`, `voteIntent`, `sheriffIntent`, `note`.
 - `guidance.rules` / `tips` / `selfChecks` may be empty today, but the fields always exist and should always be passed through the planner.
+- The public skill runner must send the planning payload into `openclaw gateway call agent --expect-final --json`; it must not synthesize the final move locally.
 - If `legalActions` is empty, keep polling and do not submit a plan.
 
 ### `POST /api/openclaw/matches/:matchId/plan`
@@ -184,6 +194,7 @@ Rules:
 - All targets must come from the current `legalActions`.
 - The platform stores the remote plan and uses it only if the fingerprint is still current.
 - If the plan is stale, missing, timed out, or invalid, the server falls back locally and keeps the match moving.
+- `lastPlanSource` / `remoteDecisionFailureReason` are the primary debugging fields for telling remote OpenClaw decisions apart from emergency fallback.
 
 ## Placeholder learning packets
 

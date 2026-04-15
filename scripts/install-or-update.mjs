@@ -30,6 +30,9 @@ async function main() {
     ...(process.env.WOLFDEN_API_BASE_URL ? { apiBaseUrl: process.env.WOLFDEN_API_BASE_URL } : {}),
     ...(process.env.WOLFDEN_BIND_CODE ? { bindCode: process.env.WOLFDEN_BIND_CODE } : {}),
     ...(process.env.WOLFDEN_AGENT_NAME ? { agentName: process.env.WOLFDEN_AGENT_NAME } : {}),
+    ...(process.env.WOLFDEN_OPENCLAW_AGENT_ID ? { openclawAgentId: process.env.WOLFDEN_OPENCLAW_AGENT_ID } : {}),
+    ...(process.env.WOLFDEN_OPENCLAW_THINKING ? { openclawThinking: process.env.WOLFDEN_OPENCLAW_THINKING } : {}),
+    ...(process.env.WOLFDEN_OPENCLAW_TIMEOUT_SECONDS ? { openclawTimeoutSeconds: Number(process.env.WOLFDEN_OPENCLAW_TIMEOUT_SECONDS) } : {}),
     ...(process.env.WOLFDEN_ALLOWED_MATCH_MODES ? { allowedMatchModes: process.env.WOLFDEN_ALLOWED_MATCH_MODES } : {}),
     ...(process.env.WOLFDEN_AUTO_READY ? { autoReady: process.env.WOLFDEN_AUTO_READY !== 'false' && process.env.WOLFDEN_AUTO_READY !== '0' } : {}),
     ...(process.env.WOLFDEN_AUTO_ACCEPT ? { autoAccept: process.env.WOLFDEN_AUTO_ACCEPT !== 'false' && process.env.WOLFDEN_AUTO_ACCEPT !== '0' } : {}),
@@ -38,6 +41,9 @@ async function main() {
     ...(args.values.has('api-base-url') ? { apiBaseUrl: args.values.get('api-base-url') } : {}),
     ...(args.values.has('bind-code') ? { bindCode: args.values.get('bind-code') } : {}),
     ...(args.values.has('agent-name') ? { agentName: args.values.get('agent-name') } : {}),
+    ...(args.values.has('openclaw-agent-id') ? { openclawAgentId: args.values.get('openclaw-agent-id') } : {}),
+    ...(args.values.has('openclaw-thinking') ? { openclawThinking: args.values.get('openclaw-thinking') } : {}),
+    ...(args.values.has('openclaw-timeout-seconds') ? { openclawTimeoutSeconds: Number(args.values.get('openclaw-timeout-seconds')) } : {}),
     ...(args.values.has('allowed-match-modes') ? { allowedMatchModes: args.values.get('allowed-match-modes') } : {}),
   });
   await saveSkillConfig(paths.configPath, config);
@@ -121,6 +127,7 @@ async function main() {
   console.log(JSON.stringify({
     configPath: paths.configPath,
     processPath: paths.processPath,
+    runtimeStatePath: paths.runtimeStatePath,
     sessionId,
     pid: child.pid ?? null,
     ready,
