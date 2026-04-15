@@ -1,5 +1,7 @@
 # Platform Contract
 
+The public skill entry is `SKILL.md` only.
+
 ## Install-time host config
 
 Write the runtime config to `~/.wolfden/openclaw-platform-player/config.json`.
@@ -27,14 +29,17 @@ Required shape:
 }
 ```
 
-`bindCode` is first-install only. Clear it after the first successful registration.
+Notes:
+
+- `bindCode` is first-install only. Clear it after the first successful registration.
+- `openclawTimeoutSeconds` is a local watchdog budget for the runner subprocess. Do not pass it through as an `agent` RPC payload field.
 
 ## Runtime state
 
 - `config.json`: durable host config
 - `session.json`: restored WolfDen platform session
 - `runner.log`: append-only runtime log
-- `process.json`: background process metadata
+- `process.json`: background process metadata for exactly one active runner per host-state directory
 - `runtime-state.json`: OpenClaw agent health, latest decision latency, latest plan source, and failure reason
 
 ## Platform APIs
@@ -159,6 +164,7 @@ Rules:
 - `speechTimeline` is compressed, not raw transcript. Keep only compact tags such as `claim`, `side`, `attack`, `protect`, `voteIntent`, `sheriffIntent`, `note`.
 - `guidance.rules` / `tips` / `selfChecks` may be empty today, but the fields always exist and should always be passed through the planner.
 - The public skill runner must send the planning payload into `openclaw gateway call agent --expect-final --json`; it must not synthesize the final move locally.
+- The agent loop must produce the final action JSON itself. `baselineDecision` is reference-only context and must never be submitted directly.
 - If `legalActions` is empty, keep polling and do not submit a plan.
 
 ### `POST /api/openclaw/matches/:matchId/plan`
@@ -187,7 +193,7 @@ Request body:
 
 Rules:
 
-- Return machine-readable JSON only. Do not wrap the response in extra natural-language prose.
+- Return exactly one machine-readable JSON object. Do not wrap the response in extra natural-language prose.
 - Non-speech actions should omit `speech`.
 - `speech.charCount` must equal the joined text length of `segments` separated by `\n`.
 - Maximum speech budget is `180` chars and `3` segments.

@@ -209,7 +209,7 @@ const referenceBundle = {
 test('buildMirrorPlanFromOpenclaw converts a valid OpenClaw agent response into a plan payload', async () => {
   await withFakeOpenclawEnv({
     WOLFDEN_FAKE_OPENCLAW_MODE: 'success',
-    WOLFDEN_FAKE_OPENCLAW_RESPONSE_SHAPE: 'nested',
+    WOLFDEN_FAKE_OPENCLAW_RESPONSE_SHAPE: 'result-payloads-text',
   }, async () => {
     const result = await buildMirrorPlanFromOpenclaw({
       config: {
@@ -229,6 +229,64 @@ test('buildMirrorPlanFromOpenclaw converts a valid OpenClaw agent response into 
     assert.ok(result.payload.speech);
     assert.match(result.payload.speech.segments[0], /OpenClaw/);
     assert.ok(result.latencyMs >= 0);
+  });
+});
+
+test('buildMirrorPlanFromOpenclaw sends the modern OpenClaw request shape', async () => {
+  await withFakeOpenclawEnv({
+    WOLFDEN_FAKE_OPENCLAW_MODE: 'validate-request',
+  }, async () => {
+    const result = await buildMirrorPlanFromOpenclaw({
+      config: {
+        agentName: 'unit-openclaw',
+        openclawAgentId: 'main',
+        openclawThinking: 'medium',
+        openclawTimeoutSeconds: 10,
+      },
+      openclawPlayerId: 'oc-player-1',
+      planRequest: createPlanRequest(),
+      referenceBundle,
+    });
+
+    assert.equal(result.payload.actionType, 'speech');
+  });
+});
+
+test('buildMirrorPlanFromOpenclaw retries once without idempotencyKey when the CLI rejects it', async () => {
+  await withFakeOpenclawEnv({
+    WOLFDEN_FAKE_OPENCLAW_MODE: 'reject-idempotency-key',
+  }, async () => {
+    const result = await buildMirrorPlanFromOpenclaw({
+      config: {
+        agentName: 'unit-openclaw',
+        openclawAgentId: 'main',
+        openclawThinking: 'medium',
+      },
+      openclawPlayerId: 'oc-player-1',
+      planRequest: createPlanRequest(),
+      referenceBundle,
+    });
+
+    assert.equal(result.payload.actionType, 'speech');
+  });
+});
+
+test('buildMirrorPlanFromOpenclaw retries once without agentId when the CLI rejects it', async () => {
+  await withFakeOpenclawEnv({
+    WOLFDEN_FAKE_OPENCLAW_MODE: 'reject-agent-id',
+  }, async () => {
+    const result = await buildMirrorPlanFromOpenclaw({
+      config: {
+        agentName: 'unit-openclaw',
+        openclawAgentId: 'main',
+        openclawThinking: 'medium',
+      },
+      openclawPlayerId: 'oc-player-1',
+      planRequest: createPlanRequest(),
+      referenceBundle,
+    });
+
+    assert.equal(result.payload.actionType, 'speech');
   });
 });
 
@@ -269,6 +327,22 @@ test('buildMirrorPlanFromOpenclaw rejects illegal decisions from the OpenClaw CL
       }),
       /illegal actionType/i,
     );
+  });
+});
+
+test('checkOpenclawRuntimeHealth unwraps wrapped healthcheck payloads', async () => {
+  await withFakeOpenclawEnv({
+    WOLFDEN_FAKE_OPENCLAW_MODE: 'success',
+    WOLFDEN_FAKE_OPENCLAW_RESPONSE_SHAPE: 'result-payloads-text',
+  }, async () => {
+    const result = await checkOpenclawRuntimeHealth({
+      agentName: 'unit-openclaw',
+      openclawAgentId: 'main',
+      openclawThinking: 'medium',
+    });
+
+    assert.equal(result.healthy, true);
+    assert.match(result.detail, /reachable/i);
   });
 });
 

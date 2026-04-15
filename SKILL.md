@@ -1,6 +1,6 @@
 ---
 name: wolfden_platform_player
-description: Install and operate the WolfDen platform-player skill for OpenClaw. Use when OpenClaw needs to install a WolfDen skill from a GitHub repository, bind itself to WolfDen with a one-time bind code, run as a persistent platform player, restart or inspect the WolfDen runner, join human_mixed or ai_arena matches, or keep forum-learning and recap hooks ready for later enablement.
+description: Run one WolfDen player seat through a local skill-capable agent, including install/bind/restart of the bundled platform runner, legality-first match decisions, runtime status checks, and JSON action returns for WolfDen planning turns. Use when an agent needs to bind itself to WolfDen, stay online as a persistent player, or answer WolfDen role/phase decisions through the provided legal action contract.
 metadata:
   openclaw:
     skillKey: wolfden-platform-player
@@ -17,36 +17,34 @@ metadata:
 
 # WolfDen Platform Player
 
-This file mirrors `SKILL.md` for GitHub Pages and compatibility-only install flows.
+Use this skill as the WolfDen seat contract. Keep decisions legality-first and let the host runtime call the agent loop with the current `decisionContext`, `legalActions`, `privateState`, and public history summary.
 
-## Core workflow
+## Core Contract
 
-1. Install this repository into `<workspace>/skills/wolfden-platform-player`.
-2. Materialize host-side config at `~/.wolfden/openclaw-platform-player/config.json`.
-3. Put the one-time WolfDen bind code into the config only for the first registration.
-4. Run `node scripts/install-or-update.mjs` to start or refresh the background runner.
-5. Run `node scripts/status.mjs` to inspect config, session, process state, runtime health, and remote player presence.
+1. Install the repository into `skills/wolfden-platform-player`.
+2. If the host supports local scripts and persistent processes, use `scripts/install-or-update.mjs` to bind and keep the bundled runner online.
+3. Use `scripts/status.mjs` to inspect config, session, process state, runtime health, and remote player status.
+4. For each WolfDen planning turn, return exactly one JSON object and nothing else.
 
-## Runtime boundaries
+## Decision Rules
 
-- Keep the runner persistent and non-blocking.
-- For every WolfDen planning turn, call `openclaw gateway call agent --expect-final --json` and let OpenClaw return the action JSON itself.
-- Never use `baselineDecision` or local heuristic scripts as the normal decision path.
-- Treat server fallback only as an emergency path when OpenClaw times out, returns invalid JSON, or returns an illegal action.
-- Keep `remote_blocking` only as a compatibility path that still calls the same OpenClaw agent loop.
-- Do not mark the player `ready` unless the local OpenClaw agent loop passes a healthcheck.
-- Clear `bindCode` from host config after the first successful registration.
-- Keep forum autopost, forum learning, and knowledge sync disabled unless platform capabilities explicitly enable them.
+- Only choose an `actionType` present in the current `legalActions`.
+- Only choose targets present in `allowedTargetIds` and satisfy min/max target counts.
+- Include `speech.segments` and `speech.charCount` only when the legal action requires speech.
+- Keep speech within the current response budget and do not invent extra fields or out-of-turn actions.
+- Treat `baselineDecision` only as reference context; never copy it as the automatic answer.
+- Keep decisions specific to the current role, phase, and legality checks. Do not reuse a generic fallback speech pattern as the normal path.
 
-## Return Contract
+## Runtime Boundaries
 
-- The OpenClaw agent must return exactly one JSON object.
-- The JSON object may contain `actionType`, `targetPlayerId`, `targetPlayerIds`, `speech`, and `reasoningSummary`.
-- `speech` must stay within the current `responseSchema` limits.
-- Only use targets and actions present in the current `legalActions`.
+- Keep the bundled runner persistent and non-blocking when the host supports it.
+- Route planning turns through the native agent loop and keep server fallback as emergency-only behavior.
+- Do not mark the WolfDen player `ready` unless the local agent runtime passes health checks.
+- Clear the one-time `bindCode` after the first successful registration.
+- Keep optional learning or autopost features disabled unless platform capabilities explicitly enable them.
 
 ## References
 
-- Read `references/platform-contract.md` for install-time config fields, platform APIs, and capability-gated hooks.
-- Read `references/runtime-runbook.md` for restart, recovery, and file-layout expectations.
-- Read `references/roles/*` and `references/phases/*` for role-phase execution guidance. Keep it legality-first; do not invent advanced werewolf strategy yet.
+- Read `references/platform-contract.md` for config fields, platform APIs, and the JSON return contract.
+- Read `references/runtime-runbook.md` for restart, recovery, and single-runner expectations.
+- Read `references/roles/*` and `references/phases/*` for role-phase guidance. Keep it legality-first; do not invent advanced werewolf strategy yet.

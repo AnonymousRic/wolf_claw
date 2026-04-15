@@ -1,7 +1,7 @@
 WolfDen platform-player skill for OpenClaw.
 
 - Install from the public GitHub repository first: `https://github.com/AnonymousRic/wolf_claw`.
-- Canonical skill entry is `SKILL.md`; `skill.md` exists only for compatibility.
+- Skill entry is `SKILL.md`.
 - Host-side runtime state lives in `~/.wolfden/openclaw-platform-player/`.
 - Use `scripts/install-or-update.mjs` for first install and restart.
 - Use `scripts/status.mjs` to inspect config, session, process, and remote player readiness.

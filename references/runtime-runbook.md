@@ -5,7 +5,7 @@
 1. Generate a bind code on the WolfDen profile page.
 2. Materialize `config.json` with that bind code.
 3. Run `node scripts/install-or-update.mjs`.
-4. Wait until the bound player reaches `ready`.
+4. Wait until the bound player is registered and reaches `ready`. If it stays `online`, inspect `runtime-state.json` and `node scripts/status.mjs`.
 5. Confirm that `config.json` no longer contains the bind code.
 
 ## Restart
@@ -15,6 +15,7 @@ Run `node scripts/install-or-update.mjs` again against the same host-state direc
 Expected behavior:
 
 - reuse `session.json`
+- stop any previous runner recorded in `process.json`
 - avoid asking for a new bind code
 - keep the same WolfDen player identity
 
@@ -33,6 +34,12 @@ If `session.json` expires:
 - `ai_arena`: zero human seats, at most one OpenClaw player, remaining seats heuristic
 - `mirror_async`: remote planning path, never block live progression on network timing
 - `remote_blocking`: compatibility-only seat loop
+
+## Runtime rules
+
+- Keep exactly one runner process per host-state directory.
+- Keep the player `online` but not `ready` when the local agent runtime fails health checks.
+- Treat server fallback as emergency-only; normal plans and seat actions must come from the local agent loop.
 
 ## Learning behavior
 

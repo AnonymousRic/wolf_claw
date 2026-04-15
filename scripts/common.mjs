@@ -1,7 +1,11 @@
-import { appendFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 export const CONFIG_SCHEMA_VERSION = 1;
 export const SESSION_SCHEMA_VERSION = 2;
@@ -160,12 +164,32 @@ export async function ensureHostStateDir(paths) {
 }
 
 async function readJsonFile(filePath) {
-  try {
-    return JSON.parse(await readFile(filePath, 'utf8'));
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-      return null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return JSON.parse(await readFile(filePath, 'utf8'));
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+        return null;
+      }
+      if (error instanceof SyntaxError && attempt < 2) {
+        await sleep(25);
+        continue;
+      }
+      throw error;
     }
+  }
+  return null;
+}
+
+async function writeJsonFileAtomic(filePath, value) {
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await rm(filePath, { force: true });
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
     throw error;
   }
 }
@@ -231,8 +255,7 @@ export async function loadSkillConfig(configPath) {
 
 export async function saveSkillConfig(configPath, config) {
   const normalized = normalizeSkillConfig(config);
-  await mkdir(path.dirname(configPath), { recursive: true });
-  await writeFile(configPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+  await writeJsonFileAtomic(configPath, normalized);
   return normalized;
 }
 
@@ -293,8 +316,7 @@ export async function saveSession(sessionPath, session) {
   if (!nextSession) {
     throw new Error('Cannot save an invalid WolfDen session payload.');
   }
-  await mkdir(path.dirname(sessionPath), { recursive: true });
-  await writeFile(sessionPath, `${JSON.stringify(nextSession, null, 2)}\n`, 'utf8');
+  await writeJsonFileAtomic(sessionPath, nextSession);
   return nextSession;
 }
 
@@ -334,9 +356,78 @@ export async function saveProcessRecord(processPath, processRecord) {
   if (!nextRecord) {
     throw new Error('Cannot save an invalid process record.');
   }
-  await mkdir(path.dirname(processPath), { recursive: true });
-  await writeFile(processPath, `${JSON.stringify(nextRecord, null, 2)}\n`, 'utf8');
+  await writeJsonFileAtomic(processPath, nextRecord);
   return nextRecord;
+}
+
+export async function clearProcessRecord(processPath) {
+  await rm(processPath, { force: true });
+}
+
+export function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EPERM') {
+      return true;
+    }
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) {
+      return true;
+    }
+    await sleep(100);
+  }
+  return !isProcessAlive(pid);
+}
+
+export async function terminateProcess(pid, timeoutMs = 3_000) {
+  if (!isProcessAlive(pid)) {
+    return true;
+  }
+
+  if (process.platform === 'win32') {
+    await execFileAsync('taskkill', ['/PID', String(pid), '/T', '/F']).catch(() => undefined);
+    return waitForProcessExit(pid, timeoutMs);
+  }
+
+  process.kill(pid, 'SIGTERM');
+  if (await waitForProcessExit(pid, timeoutMs)) {
+    return true;
+  }
+
+  process.kill(pid, 'SIGKILL');
+  return waitForProcessExit(pid, Math.max(500, Math.min(1_500, timeoutMs)));
+}
+
+export async function stopRecordedProcess(processPath) {
+  const processRecord = await loadProcessRecord(processPath);
+  if (!processRecord) {
+    return { status: 'not_found', processRecord: null };
+  }
+
+  if (!Number.isInteger(processRecord.pid) || processRecord.pid <= 0 || !isProcessAlive(processRecord.pid)) {
+    await clearProcessRecord(processPath);
+    return { status: 'stale', processRecord };
+  }
+
+  const stopped = await terminateProcess(processRecord.pid);
+  if (!stopped && isProcessAlive(processRecord.pid)) {
+    throw new Error(`Failed to stop the existing WolfDen runner process ${processRecord.pid}.`);
+  }
+
+  await clearProcessRecord(processPath);
+  return { status: 'stopped', processRecord };
 }
 
 export function normalizeRuntimeState(raw) {
@@ -383,8 +474,7 @@ export async function saveRuntimeState(runtimeStatePath, runtimeState) {
     schemaVersion: RUNTIME_STATE_SCHEMA_VERSION,
     ...runtimeState,
   });
-  await mkdir(path.dirname(runtimeStatePath), { recursive: true });
-  await writeFile(runtimeStatePath, `${JSON.stringify(nextState, null, 2)}\n`, 'utf8');
+  await writeJsonFileAtomic(runtimeStatePath, nextState);
   return nextState;
 }
 
@@ -413,19 +503,22 @@ export function createLogger(logPath) {
   };
 }
 
-export async function waitForPlayerReady(baseUrl, agentName, timeoutMs = 60_000) {
+function findPlayerByAgentName(profile, agentName) {
+  return profile?.players?.find((player) => (
+    player.agentName === agentName || player.displayName === agentName
+  )) ?? null;
+}
+
+async function waitForPlayerStatus(baseUrl, agentName, allowedStatuses, timeoutMs = 60_000) {
   const deadline = Date.now() + timeoutMs;
-  let lastProfile = null;
+  let lastPlayer = null;
 
   while (Date.now() < deadline) {
     try {
-      lastProfile = await requestJson(baseUrl, '/api/openclaw/profile');
-      const readyPlayer = lastProfile?.players?.find((player) => (
-        (player.agentName === agentName || player.displayName === agentName)
-        && (player.status === 'ready' || player.status === 'online')
-      ));
-      if (readyPlayer) {
-        return readyPlayer;
+      const profile = await requestJson(baseUrl, '/api/openclaw/profile');
+      lastPlayer = findPlayerByAgentName(profile, agentName);
+      if (lastPlayer && allowedStatuses.includes(lastPlayer.status)) {
+        return lastPlayer;
       }
     } catch {
       // Keep polling until the timeout.
@@ -434,5 +527,14 @@ export async function waitForPlayerReady(baseUrl, agentName, timeoutMs = 60_000)
     await sleep(1000);
   }
 
-  throw new Error(`Timed out waiting for OpenClaw player ${agentName} to become ready.`);
+  const lastStatus = isNonEmptyString(lastPlayer?.status) ? lastPlayer.status : 'not-registered';
+  throw new Error(`Timed out waiting for OpenClaw player ${agentName} to reach ${allowedStatuses.join('/')} (last status: ${lastStatus}).`);
+}
+
+export async function waitForPlayerPresence(baseUrl, agentName, timeoutMs = 60_000) {
+  return waitForPlayerStatus(baseUrl, agentName, ['online', 'ready'], timeoutMs);
+}
+
+export async function waitForPlayerReady(baseUrl, agentName, timeoutMs = 60_000) {
+  return waitForPlayerStatus(baseUrl, agentName, ['ready'], timeoutMs);
 }

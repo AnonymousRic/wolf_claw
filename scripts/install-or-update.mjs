@@ -7,12 +7,16 @@ import {
   createLogger,
   createSessionId,
   ensureHostStateDir,
+  loadRuntimeState,
   loadSkillConfig,
   normalizeSkillConfig,
   parseArgs,
   resolveRunnerPaths,
   saveProcessRecord,
   saveSkillConfig,
+  sleep,
+  stopRecordedProcess,
+  waitForPlayerPresence,
   waitForPlayerReady,
 } from './common.mjs';
 
@@ -47,6 +51,17 @@ async function main() {
     ...(args.values.has('allowed-match-modes') ? { allowedMatchModes: args.values.get('allowed-match-modes') } : {}),
   });
   await saveSkillConfig(paths.configPath, config);
+
+  const existingProcess = await stopRecordedProcess(paths.processPath);
+  if (existingProcess.status === 'stopped') {
+    await logger.info('Stopped the previous WolfDen runner instance before starting a new one.', {
+      previousPid: existingProcess.processRecord?.pid ?? null,
+    });
+  } else if (existingProcess.status === 'stale') {
+    await logger.info('Cleared a stale WolfDen runner process record before starting a new one.', {
+      previousPid: existingProcess.processRecord?.pid ?? null,
+    });
+  }
 
   const runnerPath = fileURLToPath(new URL('./runner.mjs', import.meta.url));
   const sessionId = createSessionId('runner');
@@ -84,9 +99,20 @@ async function main() {
       .then((player) => logger.info('Foreground install reached a ready player state.', {
         openclawPlayerId: player.openclawPlayerId,
       }))
-      .catch((error) => logger.warn('Foreground install could not confirm a ready player within the expected window.', {
-        message: error instanceof Error ? error.message : String(error),
-      }));
+      .catch(async (error) => {
+        try {
+          const player = await waitForPlayerPresence(config.apiBaseUrl, config.agentName, 5_000);
+          await logger.warn('Foreground install registered the player, but the runtime is still not ready.', {
+            openclawPlayerId: player.openclawPlayerId,
+            playerStatus: player.status,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        } catch {
+          await logger.warn('Foreground install could not confirm a registered or ready player within the expected window.', {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
 
     const [code, signal] = await once(child, 'exit');
     if (signal) {
@@ -113,16 +139,42 @@ async function main() {
   });
 
   let ready = false;
+  let registered = false;
+  let playerStatus = null;
   let playerId = null;
+  let runtimeState = null;
   try {
-    const player = await waitForPlayerReady(config.apiBaseUrl, config.agentName);
-    ready = true;
+    const player = await waitForPlayerPresence(config.apiBaseUrl, config.agentName, 30_000);
+    registered = true;
+    playerStatus = player.status;
     playerId = player.openclawPlayerId;
+
+    if (player.status === 'ready') {
+      ready = true;
+    } else {
+      const runtimeDeadline = Date.now() + 10_000;
+      while (Date.now() < runtimeDeadline) {
+        runtimeState = await loadRuntimeState(paths.runtimeStatePath).catch(() => null);
+        if (runtimeState?.lastHealthcheckAt) {
+          break;
+        }
+        await sleep(500);
+      }
+
+      if (runtimeState?.openclawRuntimeHealthy) {
+        const readyPlayer = await waitForPlayerReady(config.apiBaseUrl, config.agentName, 10_000);
+        ready = true;
+        playerStatus = readyPlayer.status;
+        playerId = readyPlayer.openclawPlayerId;
+      }
+    }
   } catch (error) {
     await logger.warn('Background install finished without a confirmed ready player.', {
       message: error instanceof Error ? error.message : String(error),
     });
   }
+
+  runtimeState = runtimeState ?? await loadRuntimeState(paths.runtimeStatePath).catch(() => null);
 
   console.log(JSON.stringify({
     configPath: paths.configPath,
@@ -130,8 +182,11 @@ async function main() {
     runtimeStatePath: paths.runtimeStatePath,
     sessionId,
     pid: child.pid ?? null,
+    registered,
+    playerStatus,
     ready,
     openclawPlayerId: playerId,
+    runtimeState,
   }, null, 2));
 }
 

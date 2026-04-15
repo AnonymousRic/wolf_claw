@@ -165,7 +165,7 @@ function resolveOpenclawCommand() {
   };
 }
 
-function resolveTimeoutSeconds(config, deadlineMs, fallbackMs = 12_000) {
+function resolveLocalTimeoutSeconds(config, deadlineMs, fallbackMs = 12_000) {
   const platformBudgetMs = Number.isFinite(deadlineMs) && deadlineMs > 0
     ? deadlineMs
     : fallbackMs;
@@ -177,13 +177,11 @@ function resolveTimeoutSeconds(config, deadlineMs, fallbackMs = 12_000) {
 }
 
 function buildSessionKey(config, openclawPlayerId, matchId, playerId) {
-  const agentId = config?.openclawAgentId || DEFAULT_OPENCLAW_AGENT_ID;
-  return `agent:${agentId}:wolfden:${openclawPlayerId}:${matchId}:${playerId}`;
+  return `wolfden:${openclawPlayerId}:${matchId}:${playerId}`;
 }
 
 function buildHealthcheckSessionKey(config, agentName) {
-  const agentId = config?.openclawAgentId || DEFAULT_OPENCLAW_AGENT_ID;
-  return `agent:${agentId}:wolfden:health:${agentName || 'unknown-agent'}`;
+  return `wolfden:health:${agentName || 'unknown-agent'}`;
 }
 
 function callOpenclawGateway(params, timeoutSeconds) {
@@ -251,6 +249,58 @@ function callOpenclawGateway(params, timeoutSeconds) {
   });
 }
 
+function sanitizeIdempotencyPart(value, fallback = 'unknown') {
+  const normalized = compactText(value ?? fallback).replace(/[^a-zA-Z0-9:_-]/g, '-');
+  return normalized || fallback;
+}
+
+function buildIdempotencyKey(...parts) {
+  return parts.map((part, index) => sanitizeIdempotencyPart(part, `part-${index + 1}`)).join(':');
+}
+
+function buildAgentParams({ config, prompt, sessionKey, idempotencyKey }) {
+  return {
+    message: prompt,
+    sessionKey,
+    deliver: false,
+    thinking: config?.openclawThinking || DEFAULT_OPENCLAW_THINKING,
+    agentId: config?.openclawAgentId || DEFAULT_OPENCLAW_AGENT_ID,
+    idempotencyKey,
+  };
+}
+
+function resolveCompatDowngradeKeys(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const lowered = message.toLowerCase();
+  const rejectedKeys = [];
+
+  if (lowered.includes('idempotencykey') || lowered.includes('idempotency key')) {
+    rejectedKeys.push('idempotencyKey');
+  }
+  if (lowered.includes('agentid') || lowered.includes('agent id')) {
+    rejectedKeys.push('agentId');
+  }
+
+  return rejectedKeys;
+}
+
+async function callOpenclawGatewayWithCompat(params, timeoutSeconds) {
+  try {
+    return await callOpenclawGateway(params, timeoutSeconds);
+  } catch (error) {
+    const rejectedKeys = resolveCompatDowngradeKeys(error);
+    if (!rejectedKeys.length) {
+      throw error;
+    }
+
+    const downgradedParams = { ...params };
+    for (const key of rejectedKeys) {
+      delete downgradedParams[key];
+    }
+    return callOpenclawGateway(downgradedParams, timeoutSeconds);
+  }
+}
+
 function tryParseJson(text) {
   try {
     return JSON.parse(text);
@@ -287,14 +337,14 @@ function extractJsonObjectFromText(text) {
   return null;
 }
 
-function findDecisionObject(value, visited = new Set()) {
+function findNestedObject(value, predicate, visited = new Set()) {
   if (value == null) {
     return null;
   }
 
   if (typeof value === 'string') {
     const parsed = extractJsonObjectFromText(value);
-    return parsed ? findDecisionObject(parsed, visited) : null;
+    return parsed ? findNestedObject(parsed, predicate, visited) : null;
   }
 
   if (typeof value !== 'object') {
@@ -306,13 +356,13 @@ function findDecisionObject(value, visited = new Set()) {
   }
   visited.add(value);
 
-  if (typeof value.actionType === 'string') {
+  if (predicate(value)) {
     return value;
   }
 
   if (Array.isArray(value)) {
     for (const item of value) {
-      const match = findDecisionObject(item, visited);
+      const match = findNestedObject(item, predicate, visited);
       if (match) {
         return match;
       }
@@ -321,7 +371,7 @@ function findDecisionObject(value, visited = new Set()) {
   }
 
   for (const child of Object.values(value)) {
-    const match = findDecisionObject(child, visited);
+    const match = findNestedObject(child, predicate, visited);
     if (match) {
       return match;
     }
@@ -330,10 +380,10 @@ function findDecisionObject(value, visited = new Set()) {
   return null;
 }
 
-function parseOpenclawOutput(stdout) {
+function parseOpenclawOutput(stdout, predicate) {
   const direct = extractJsonObjectFromText(stdout);
   if (direct) {
-    return findDecisionObject(direct);
+    return findNestedObject(direct, predicate);
   }
 
   const lines = String(stdout ?? '')
@@ -345,9 +395,9 @@ function parseOpenclawOutput(stdout) {
     if (!parsed) {
       continue;
     }
-    const decision = findDecisionObject(parsed);
-    if (decision) {
-      return decision;
+    const match = findNestedObject(parsed, predicate);
+    if (match) {
+      return match;
     }
   }
 
@@ -464,51 +514,46 @@ function normalizeDecision(decision, legalActions) {
 
 async function runAgentPrompt({
   config,
-  openclawPlayerId,
   sessionKey,
   prompt,
   deadlineMs,
+  idempotencyKey,
 }) {
-  const timeoutSeconds = resolveTimeoutSeconds(config, deadlineMs);
-  const thinking = config?.openclawThinking || DEFAULT_OPENCLAW_THINKING;
-  const params = {
-    message: prompt,
+  const timeoutSeconds = resolveLocalTimeoutSeconds(config, deadlineMs);
+  const params = buildAgentParams({
+    config,
+    prompt,
     sessionKey,
-    thinking,
-    deliver: false,
-    timeoutSeconds,
-  };
+    idempotencyKey,
+  });
   const startedAt = Date.now();
-  const result = await callOpenclawGateway(params, timeoutSeconds);
+  const result = await callOpenclawGatewayWithCompat(params, timeoutSeconds);
   return {
-    decision: parseOpenclawOutput(result.stdout),
+    output: result.stdout,
     latencyMs: Date.now() - startedAt,
     timeoutSeconds,
-    rawOutput: result.stdout,
-    openclawPlayerId,
   };
 }
 
 export async function checkOpenclawRuntimeHealth(config) {
-  const timeoutSeconds = resolveTimeoutSeconds(config, 8_000, 8_000);
+  const timeoutSeconds = resolveLocalTimeoutSeconds(config, 8_000, 8_000);
   const sessionKey = buildHealthcheckSessionKey(config, config?.agentName);
-  const params = {
-    message: 'Return exactly {"ok":true,"runtime":"openclaw-agent-loop"} and nothing else.',
+  const params = buildAgentParams({
+    config,
+    prompt: 'Return exactly {"ok":true,"runtime":"openclaw-agent-loop"} and nothing else.',
     sessionKey,
-    thinking: config?.openclawThinking || DEFAULT_OPENCLAW_THINKING,
-    deliver: false,
-    timeoutSeconds,
-  };
+    idempotencyKey: buildIdempotencyKey('wolfden-health', config?.agentName, Date.now()),
+  });
   const startedAt = Date.now();
 
   try {
-    const result = await callOpenclawGateway(params, timeoutSeconds);
-    const payload = extractJsonObjectFromText(result.stdout);
+    const result = await callOpenclawGatewayWithCompat(params, timeoutSeconds);
+    const payload = parseOpenclawOutput(result.stdout, (value) => value && value.ok === true);
     if (!payload || payload.ok !== true) {
       return {
         healthy: false,
         latencyMs: Date.now() - startedAt,
-        detail: 'OpenClaw agent loop returned an unexpected healthcheck payload.',
+        detail: `OpenClaw agent loop returned an unexpected healthcheck payload: ${compactText(result.stdout).slice(0, 180) || 'empty output'}`,
       };
     }
     return {
@@ -539,8 +584,12 @@ export async function buildMirrorPlanFromOpenclaw({
     sessionKey,
     prompt,
     deadlineMs: planRequest.deadlineMs ?? planRequest.decisionContext?.phase?.modelHardTimeoutMs ?? 12_000,
+    idempotencyKey: buildIdempotencyKey('wolfden-plan', planRequest.requestId, planRequest.fingerprint),
   });
-  const decision = normalizeDecision(result.decision, planRequest.legalActions ?? []);
+  const decision = normalizeDecision(
+    parseOpenclawOutput(result.output, (value) => typeof value?.actionType === 'string'),
+    planRequest.legalActions ?? [],
+  );
 
   return {
     payload: {
@@ -566,12 +615,15 @@ export async function buildSeatActionFromOpenclaw({
     : 12_000;
   const result = await runAgentPrompt({
     config,
-    openclawPlayerId,
     sessionKey,
     prompt,
     deadlineMs,
+    idempotencyKey: buildIdempotencyKey('wolfden-seat', turn.turnToken ?? turn.matchId, turn.playerId, turn.phase),
   });
-  const decision = normalizeDecision(result.decision, turn.legalActions ?? []);
+  const decision = normalizeDecision(
+    parseOpenclawOutput(result.output, (value) => typeof value?.actionType === 'string'),
+    turn.legalActions ?? [],
+  );
 
   return {
     action: {
