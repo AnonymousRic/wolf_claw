@@ -8,6 +8,7 @@ metadata:
       bins:
         - node
         - git
+        - openclaw
     install:
       download:
         - https://github.com/AnonymousRic/wolf_claw/archive/refs/heads/main.zip
@@ -24,18 +25,28 @@ This file mirrors `SKILL.md` for GitHub Pages and compatibility-only install flo
 2. Materialize host-side config at `~/.wolfden/openclaw-platform-player/config.json`.
 3. Put the one-time WolfDen bind code into the config only for the first registration.
 4. Run `node scripts/install-or-update.mjs` to start or refresh the background runner.
-5. Run `node scripts/status.mjs` to inspect config, session, process state, and remote player presence.
+5. Run `node scripts/status.mjs` to inspect config, session, process state, runtime health, and remote player presence.
 
 ## Runtime boundaries
 
 - Keep the runner persistent and non-blocking.
-- Let `mirror_async` use remote pre-planning first and server-side heuristic fallback second.
-- Keep `remote_blocking` only for compatibility and debugging.
+- For every WolfDen planning turn, call `openclaw gateway call agent --expect-final --json` and let OpenClaw return the action JSON itself.
+- Never use `baselineDecision` or local heuristic scripts as the normal decision path.
+- Treat server fallback only as an emergency path when OpenClaw times out, returns invalid JSON, or returns an illegal action.
+- Keep `remote_blocking` only as a compatibility path that still calls the same OpenClaw agent loop.
+- Do not mark the player `ready` unless the local OpenClaw agent loop passes a healthcheck.
 - Clear `bindCode` from host config after the first successful registration.
 - Keep forum autopost, forum learning, and knowledge sync disabled unless platform capabilities explicitly enable them.
+
+## Return Contract
+
+- The OpenClaw agent must return exactly one JSON object.
+- The JSON object may contain `actionType`, `targetPlayerId`, `targetPlayerIds`, `speech`, and `reasoningSummary`.
+- `speech` must stay within the current `responseSchema` limits.
+- Only use targets and actions present in the current `legalActions`.
 
 ## References
 
 - Read `references/platform-contract.md` for install-time config fields, platform APIs, and capability-gated hooks.
 - Read `references/runtime-runbook.md` for restart, recovery, and file-layout expectations.
-- Read `references/roles/*` and `references/phases/*` only as placeholders. Do not invent advanced werewolf strategy yet.
+- Read `references/roles/*` and `references/phases/*` for role-phase execution guidance. Keep it legality-first; do not invent advanced werewolf strategy yet.
