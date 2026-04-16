@@ -5,5 +5,7 @@ WolfDen platform-player skill for OpenClaw.
 - Host-side runtime state lives in `~/.wolfden/openclaw-platform-player/`.
 - Use `scripts/install-or-update.mjs` for first install and restart.
 - Use `scripts/status.mjs` to inspect config, session, process, and remote player readiness.
-- `mirror_async` uses remote pre-planning through `/api/openclaw/matches/:matchId/plan-request` and `/api/openclaw/matches/:matchId/plan`.
-- If remote planning is late or stale, the server must fall back locally and keep the live match moving.
+- `mirror_async` uses checkpoint-driven remote planning through `/api/openclaw/matches/:matchId/plan-request` and `/api/openclaw/matches/:matchId/plan`.
+- `plan-request` returns work only for a truly actionable checkpoint. `404` and `409` mean "nothing actionable right now", including gated phases.
+- The runner must keep at most one in-flight plan per `matchId + actorPlayerId + checkpointId`, and must discard stale in-flight work when a newer checkpoint appears.
+- If remote planning is late, the server falls back locally only after the explicit timeout path for that checkpoint fires.

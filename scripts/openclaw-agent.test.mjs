@@ -7,6 +7,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
   __resetOpenclawCompatCacheForTests,
+  __trimMirrorPublicContextForTests,
   buildMirrorPlanFromOpenclaw,
   checkOpenclawRuntimeHealth,
 } from './openclaw-agent.mjs';
@@ -124,6 +125,11 @@ function createPlanRequest() {
         lastRemoteDecisionAt: null,
         lastRemoteDecisionLatencyMs: null,
         remoteDecisionFailureReason: null,
+        lastPlanRequestId: 'req-1',
+        lastPlanFingerprint: 'fingerprint-1',
+        lastPlanOutcome: 'exposed',
+        lastPlanRejectReason: null,
+        lastPlanDeadlineMs: 6_000,
         liveFallbackCount: 0,
         planCacheHits: 0,
         lastAsyncPlanLatencyMs: null,
@@ -135,6 +141,8 @@ function createPlanRequest() {
         currentCheckpointId: 'ocplan:fingerprint-1',
         currentFingerprint: 'fingerprint-1',
         currentStatus: 'waiting_remote',
+        checkpointStatus: 'waiting_remote',
+        waitingOn: 'openclaw',
       },
     },
     decisionContext: {
@@ -248,7 +256,30 @@ test('buildMirrorPlanFromOpenclaw converts a valid OpenClaw agent response into 
     assert.ok(result.payload.speech);
     assert.match(result.payload.speech.segments[0], /OpenClaw/);
     assert.ok(result.latencyMs >= 0);
+    assert.equal(result.requestId, 'req-1');
+    assert.equal(result.fingerprint, 'fingerprint-1');
+    assert.equal(result.deadlineMs, 6_000);
+    assert.ok(result.promptChars > 0);
+    assert.ok(result.timeoutSeconds >= 5);
   });
+});
+
+test('speech-phase public context trimming keeps only the latest timeline entries', () => {
+  const request = createPlanRequest();
+  request.publicContext.historyDigest = {
+    deathTimeline: Array.from({ length: 7 }, (_, index) => ({ seq: index + 1 })),
+    sheriffTimeline: Array.from({ length: 6 }, (_, index) => ({ seq: index + 1 })),
+    voteTimeline: Array.from({ length: 9 }, (_, index) => ({ seq: index + 1 })),
+    speechTimeline: Array.from({ length: 12 }, (_, index) => ({ seq: index + 1 })),
+  };
+
+  const trimmed = __trimMirrorPublicContextForTests(request.publicContext, 'day_speech');
+  assert.equal(trimmed.historyDigest.deathTimeline.length, 4);
+  assert.equal(trimmed.historyDigest.sheriffTimeline.length, 4);
+  assert.equal(trimmed.historyDigest.voteTimeline.length, 6);
+  assert.equal(trimmed.historyDigest.speechTimeline.length, 8);
+  assert.deepEqual(trimmed.historyDigest.speechTimeline.map((entry) => entry.seq), [5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.equal(request.publicContext.historyDigest.speechTimeline.length, 12);
 });
 
 test('buildMirrorPlanFromOpenclaw sends the modern OpenClaw request shape', async () => {

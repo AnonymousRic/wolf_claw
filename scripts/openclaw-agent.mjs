@@ -7,6 +7,14 @@ import {
 
 const OPENCLAW_MAX_SPEECH_CHARS = 180;
 const OPENCLAW_MAX_SPEECH_SEGMENTS = 3;
+const OPENCLAW_MAX_PLATFORM_TIMEOUT_MS = 30_000;
+const SPEECH_PHASES = new Set(['sheriff_speech', 'day_speech', 'day_pk_speech', 'last_words']);
+const SPEECH_HISTORY_LIMITS = {
+  deathTimeline: 4,
+  sheriffTimeline: 4,
+  voteTimeline: 6,
+  speechTimeline: 8,
+};
 const compatRejectedParamKeys = new Set();
 
 export function __resetOpenclawCompatCacheForTests() {
@@ -94,7 +102,39 @@ function buildSharedPromptBody({ payload, role, phase }) {
   ].join('\n');
 }
 
+function trimDigestEntries(entries, limit) {
+  return Array.isArray(entries)
+    ? entries.slice(-limit)
+    : [];
+}
+
+export function __trimMirrorPublicContextForTests(publicContext, phase) {
+  if (!publicContext || typeof publicContext !== 'object') {
+    return publicContext ?? null;
+  }
+
+  if (!SPEECH_PHASES.has(phase)) {
+    return publicContext;
+  }
+
+  const historyDigest = publicContext.historyDigest && typeof publicContext.historyDigest === 'object'
+    ? publicContext.historyDigest
+    : {};
+
+  return {
+    ...publicContext,
+    historyDigest: {
+      ...historyDigest,
+      deathTimeline: trimDigestEntries(historyDigest.deathTimeline, SPEECH_HISTORY_LIMITS.deathTimeline),
+      sheriffTimeline: trimDigestEntries(historyDigest.sheriffTimeline, SPEECH_HISTORY_LIMITS.sheriffTimeline),
+      voteTimeline: trimDigestEntries(historyDigest.voteTimeline, SPEECH_HISTORY_LIMITS.voteTimeline),
+      speechTimeline: trimDigestEntries(historyDigest.speechTimeline, SPEECH_HISTORY_LIMITS.speechTimeline),
+    },
+  };
+}
+
 function buildMirrorPrompt(planRequest, referenceBundle) {
+  const trimmedPublicContext = __trimMirrorPublicContextForTests(planRequest.publicContext, planRequest.phase);
   const payload = {
     matchId: planRequest.matchId,
     playerId: planRequest.playerId,
@@ -103,13 +143,13 @@ function buildMirrorPrompt(planRequest, referenceBundle) {
     legalActions: planRequest.legalActions,
     privateState: planRequest.privateState,
     publicContext: {
-      matchId: planRequest.publicContext?.backgroundDigest?.matchId ?? planRequest.matchId,
-      day: planRequest.publicContext?.day ?? null,
-      turn: planRequest.publicContext?.turn ?? null,
-      scoreboard: planRequest.publicContext?.scoreboard ?? null,
-      tableState: planRequest.publicContext?.tableState ?? null,
-      backgroundDigest: planRequest.publicContext?.backgroundDigest ?? null,
-      historyDigest: planRequest.publicContext?.historyDigest ?? null,
+      matchId: trimmedPublicContext?.backgroundDigest?.matchId ?? planRequest.matchId,
+      day: trimmedPublicContext?.day ?? null,
+      turn: trimmedPublicContext?.turn ?? null,
+      scoreboard: trimmedPublicContext?.scoreboard ?? null,
+      tableState: trimmedPublicContext?.tableState ?? null,
+      backgroundDigest: trimmedPublicContext?.backgroundDigest ?? null,
+      historyDigest: trimmedPublicContext?.historyDigest ?? null,
     },
     decisionContext: planRequest.decisionContext,
     references: buildReferenceSummary(
@@ -173,13 +213,18 @@ function resolveOpenclawCommand() {
 }
 
 function resolveLocalTimeoutSeconds(config, deadlineMs, fallbackMs = 12_000) {
-  const platformBudgetMs = Number.isFinite(deadlineMs) && deadlineMs > 0
-    ? deadlineMs
-    : fallbackMs;
+  if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
+    const boundedPlatformBudgetMs = Math.max(
+      2_000,
+      Math.min(deadlineMs - 1_000, OPENCLAW_MAX_PLATFORM_TIMEOUT_MS),
+    );
+    return Math.max(2, Math.ceil(boundedPlatformBudgetMs / 1000));
+  }
+
   const configuredTimeoutMs = Number.isFinite(config?.openclawTimeoutSeconds) && config.openclawTimeoutSeconds > 0
     ? config.openclawTimeoutSeconds * 1000
-    : Number.POSITIVE_INFINITY;
-  const boundedMs = Math.max(2_000, Math.min(platformBudgetMs, configuredTimeoutMs, 30_000));
+    : fallbackMs;
+  const boundedMs = Math.max(2_000, Math.min(configuredTimeoutMs, OPENCLAW_MAX_PLATFORM_TIMEOUT_MS));
   return Math.max(2, Math.ceil(boundedMs / 1000));
 }
 
@@ -591,6 +636,7 @@ export async function buildMirrorPlanFromOpenclaw({
 }) {
   const sessionKey = buildSessionKey(config, openclawPlayerId, planRequest.matchId, planRequest.playerId);
   const prompt = buildMirrorPrompt(planRequest, referenceBundle);
+  const promptChars = prompt.length;
   const result = await runAgentPrompt({
     config,
     openclawPlayerId,
@@ -612,6 +658,11 @@ export async function buildMirrorPlanFromOpenclaw({
       ...decision,
     },
     latencyMs: result.latencyMs,
+    requestId: planRequest.requestId,
+    fingerprint: planRequest.fingerprint,
+    deadlineMs: planRequest.deadlineMs ?? planRequest.decisionContext?.phase?.modelHardTimeoutMs ?? 12_000,
+    promptChars,
+    timeoutSeconds: result.timeoutSeconds,
   };
 }
 

@@ -445,6 +445,11 @@ export function normalizeRuntimeState(raw) {
       lastMatchId: null,
       lastPhase: null,
       lastActionType: null,
+      lastRequestId: null,
+      lastFingerprint: null,
+      lastDeadlineMs: null,
+      lastPromptChars: null,
+      lastTimeoutSeconds: null,
     };
   }
 
@@ -461,6 +466,11 @@ export function normalizeRuntimeState(raw) {
     lastMatchId: isNonEmptyString(raw.lastMatchId) ? raw.lastMatchId : null,
     lastPhase: isNonEmptyString(raw.lastPhase) ? raw.lastPhase : null,
     lastActionType: isNonEmptyString(raw.lastActionType) ? raw.lastActionType : null,
+    lastRequestId: isNonEmptyString(raw.lastRequestId) ? raw.lastRequestId : null,
+    lastFingerprint: isNonEmptyString(raw.lastFingerprint) ? raw.lastFingerprint : null,
+    lastDeadlineMs: typeof raw.lastDeadlineMs === 'number' ? raw.lastDeadlineMs : null,
+    lastPromptChars: typeof raw.lastPromptChars === 'number' ? raw.lastPromptChars : null,
+    lastTimeoutSeconds: typeof raw.lastTimeoutSeconds === 'number' ? raw.lastTimeoutSeconds : null,
   };
 }
 

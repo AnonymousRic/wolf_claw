@@ -71,7 +71,7 @@ Returns the current remote planning request for the bound `mirror_async` seat:
   "requestId": "ocplan:...",
   "matchId": "match_...",
   "playerId": "player_...",
-  "fingerprint": "match:player:phase:day:turn:lastSeq:legalActions",
+  "fingerprint": "match:player:phase:day:turn:stageIdentity:legalActions",
   "phase": "day_speech",
   "deadlineMs": 4200,
   "legalActions": [],
@@ -92,6 +92,9 @@ Returns the current remote planning request for the bound `mirror_async` seat:
       "speechTimeline": []
     },
     "telemetry": {
+      "currentStatus": "waiting_remote",
+      "checkpointStatus": "waiting_remote",
+      "waitingOn": "openclaw",
       "lastPlanSource": null,
       "lastRemoteDecisionAt": null,
       "lastRemoteDecisionLatencyMs": null,
@@ -160,12 +163,17 @@ Returns the current remote planning request for the bound `mirror_async` seat:
 
 Rules:
 
+- The endpoint is checkpoint-driven. It returns `409` whenever the current seat is gated, idle, not the active actor, or has no legal action yet.
+- `requestId` is the current actionable checkpoint id. Treat it as the primary dedupe key for one in-flight plan attempt.
+- `fingerprint` changes only when the actionable checkpoint really changes: phase, actor, timed-stage pending set, turn identity, or legal action signature.
+- The runner must back off on `404` or `409`. Those responses mean "no actionable checkpoint right now", not "planner failure".
+- `telemetry.currentStatus` is the planning lifecycle view, while `telemetry.checkpointStatus` / `waitingOn` explain whether the match is gated, actionable, or waiting on OpenClaw.
 - `historyDigest` is complete and ordered. Do not drop earlier deaths, votes, sheriff events, or speech summaries.
 - `speechTimeline` is compressed, not raw transcript. Keep only compact tags such as `claim`, `side`, `attack`, `protect`, `voteIntent`, `sheriffIntent`, `note`.
 - `guidance.rules` / `tips` / `selfChecks` may be empty today, but the fields always exist and should always be passed through the planner.
 - The public skill runner must send the planning payload into `openclaw gateway call agent --expect-final --json`; it must not synthesize the final move locally.
 - The agent loop must produce the final action JSON itself. `baselineDecision` is reference-only context and must never be submitted directly.
-- If `legalActions` is empty, keep polling and do not submit a plan.
+- Do not blind-poll until `legalActions` becomes non-empty. Wait for a new actionable checkpoint from room/snapshot state first.
 
 ### `POST /api/openclaw/matches/:matchId/plan`
 
@@ -178,7 +186,7 @@ Request body:
 ```json
 {
   "requestId": "ocplan:...",
-  "fingerprint": "match:player:phase:day:turn:lastSeq:legalActions",
+  "fingerprint": "match:player:phase:day:turn:stageIdentity:legalActions",
   "clientActionId": "wolfden-plan-...",
   "actionType": "speech",
   "targetPlayerId": "optional-single-target",
@@ -198,8 +206,9 @@ Rules:
 - `speech.charCount` must equal the joined text length of `segments` separated by `\n`.
 - Maximum speech budget is `180` chars and `3` segments.
 - All targets must come from the current `legalActions`.
-- The platform stores the remote plan and uses it only if the fingerprint is still current.
-- If the plan is stale, missing, timed out, or invalid, the server falls back locally and keeps the match moving.
+- The platform stores the remote plan and uses it only if the actionable checkpoint is still current.
+- Late submits are considered stale only when the checkpoint has really changed or the platform has already triggered timeout fallback for that checkpoint.
+- If the plan is missing, timed out, or invalid, the server falls back locally only after the explicit timeout path fires.
 - `lastPlanSource` / `remoteDecisionFailureReason` are the primary debugging fields for telling remote OpenClaw decisions apart from emergency fallback.
 
 ## Placeholder learning packets

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 import {
   DEFAULT_AGENT_NAME,
   DEFAULT_ALLOWED_MATCH_MODES,
@@ -136,9 +137,16 @@ function buildMatchSocketUrl(apiBaseUrl) {
   return url.toString();
 }
 
-function extractActionableCheckpointFromRoom(room) {
+function isDecisionCheckpointStatus(status) {
+  return status === 'actionable' || status === 'waiting_remote';
+}
+
+export function extractActionableCheckpointFromRoom(room) {
   const sync = room?.openclawSync;
   if (!sync || sync.requiresDecision !== true || !sync.checkpointId || !sync.fingerprint || !sync.matchId) {
+    return null;
+  }
+  if (!isDecisionCheckpointStatus(sync.checkpointStatus ?? 'actionable')) {
     return null;
   }
   return {
@@ -149,12 +157,13 @@ function extractActionableCheckpointFromRoom(room) {
   };
 }
 
-function extractActionableCheckpointFromSnapshot(snapshot) {
+export function extractActionableCheckpointFromSnapshot(snapshot) {
   const telemetry = snapshot?.openclawTelemetry;
   if (!telemetry?.currentCheckpointId || !telemetry?.currentFingerprint) {
     return null;
   }
-  if (telemetry.currentStatus === 'idle' || telemetry.currentStatus === 'stale_after_fallback') {
+  const checkpointStatus = telemetry.checkpointStatus ?? telemetry.currentStatus ?? 'idle';
+  if (!isDecisionCheckpointStatus(checkpointStatus)) {
     return null;
   }
   return {
@@ -396,7 +405,7 @@ async function maybeRunDeferredLearningHooks({
   }
 }
 
-async function refreshMirrorAsyncPlan({
+export async function refreshMirrorAsyncPlan({
   config,
   sessionToken,
   openclawPlayerId,
@@ -404,12 +413,18 @@ async function refreshMirrorAsyncPlan({
   referenceBundle,
   planCache,
   inFlightPlans,
+  latestCheckpoints,
   logger,
   updateRuntimeState,
+  deps = {
+    getMirrorPlanRequest,
+    buildMirrorPlanFromOpenclaw,
+    submitMirrorPlan,
+  },
 }) {
   let planRequest;
   try {
-    planRequest = await getMirrorPlanRequest(config.apiBaseUrl, matchId, sessionToken);
+    planRequest = await deps.getMirrorPlanRequest(config.apiBaseUrl, matchId, sessionToken);
   } catch (error) {
     if (error instanceof HttpError && (error.statusCode === 404 || error.statusCode === 409)) {
       return computeActivePollMs(config, null);
@@ -423,24 +438,47 @@ async function refreshMirrorAsyncPlan({
   }
 
   const cacheKey = `${matchId}:${planRequest.playerId}`;
+  const checkpointRef = {
+    checkpointId: planRequest.requestId,
+    fingerprint: planRequest.fingerprint,
+  };
+  latestCheckpoints?.set(matchId, checkpointRef);
   if (planCache.get(cacheKey) === planRequest.fingerprint) {
     return nextPollMs;
   }
-  const inFlightKey = `${cacheKey}:${planRequest.fingerprint}`;
+  const inFlightKey = `${cacheKey}:${planRequest.requestId}`;
   if (inFlightPlans.has(inFlightKey)) {
     return nextPollMs;
   }
 
   const startedAt = Date.now();
   inFlightPlans.add(inFlightKey);
+  let remotePlan = null;
   try {
-    const remotePlan = await buildMirrorPlanFromOpenclaw({
+    remotePlan = await deps.buildMirrorPlanFromOpenclaw({
       config,
       openclawPlayerId,
       planRequest,
       referenceBundle,
     });
-    const submitted = await submitMirrorPlan(config.apiBaseUrl, matchId, sessionToken, remotePlan.payload);
+    const latestCheckpoint = latestCheckpoints?.get(matchId);
+    if (
+      latestCheckpoint
+      && (
+        latestCheckpoint.checkpointId !== checkpointRef.checkpointId
+        || latestCheckpoint.fingerprint !== checkpointRef.fingerprint
+      )
+    ) {
+      await logger.info('Discarded stale OpenClaw mirror_async plan before submit.', {
+        matchId,
+        phase: planRequest.phase,
+        discardedCheckpointId: checkpointRef.checkpointId,
+        latestCheckpointId: latestCheckpoint.checkpointId,
+      });
+      return nextPollMs;
+    }
+
+    const submitted = await deps.submitMirrorPlan(config.apiBaseUrl, matchId, sessionToken, remotePlan.payload);
     planCache.set(cacheKey, submitted.fingerprint);
     await updateRuntimeState({
       openclawRuntimeHealthy: true,
@@ -452,17 +490,33 @@ async function refreshMirrorAsyncPlan({
       lastMatchId: matchId,
       lastPhase: planRequest.phase,
       lastActionType: remotePlan.payload.actionType,
+      lastRequestId: remotePlan.requestId ?? planRequest.requestId,
+      lastFingerprint: remotePlan.fingerprint ?? planRequest.fingerprint,
+      lastDeadlineMs: remotePlan.deadlineMs ?? planRequest.deadlineMs ?? null,
+      lastPromptChars: remotePlan.promptChars ?? null,
+      lastTimeoutSeconds: remotePlan.timeoutSeconds ?? null,
     }, true);
     await logger.info('Submitted remote OpenClaw mirror_async plan.', {
       matchId,
       playerId: planRequest.playerId,
       phase: planRequest.phase,
+      requestId: remotePlan.requestId ?? planRequest.requestId,
       fingerprint: submitted.fingerprint,
       openclawLatencyMs: remotePlan.latencyMs,
+      promptChars: remotePlan.promptChars ?? null,
+      timeoutSeconds: remotePlan.timeoutSeconds ?? null,
     });
   } catch (error) {
     planCache.delete(cacheKey);
     const message = error instanceof Error ? error.message : String(error);
+    if (error instanceof HttpError && error.statusCode === 409) {
+      await logger.info('OpenClaw mirror_async plan was superseded before submission.', {
+        matchId,
+        phase: planRequest.phase,
+        message,
+      });
+      return nextPollMs;
+    }
     const lastPlanSource = message.includes('timed out') ? 'timeout' : 'invalid-remote-response';
     const runtimeHealthy = !isRuntimeTransportFailure(error) && lastPlanSource !== 'timeout';
     await updateRuntimeState({
@@ -475,10 +529,19 @@ async function refreshMirrorAsyncPlan({
       lastMatchId: matchId,
       lastPhase: planRequest.phase,
       lastActionType: null,
+      lastRequestId: remotePlan?.requestId ?? planRequest.requestId,
+      lastFingerprint: remotePlan?.fingerprint ?? planRequest.fingerprint,
+      lastDeadlineMs: remotePlan?.deadlineMs ?? planRequest.deadlineMs ?? null,
+      lastPromptChars: remotePlan?.promptChars ?? null,
+      lastTimeoutSeconds: remotePlan?.timeoutSeconds ?? null,
     }, true);
     await logger.warn('OpenClaw mirror_async planning failed. The server may fall back locally.', {
       matchId,
       phase: planRequest.phase,
+      requestId: remotePlan?.requestId ?? planRequest.requestId,
+      fingerprint: remotePlan?.fingerprint ?? planRequest.fingerprint,
+      promptChars: remotePlan?.promptChars ?? null,
+      timeoutSeconds: remotePlan?.timeoutSeconds ?? null,
       message,
     });
   } finally {
@@ -504,6 +567,7 @@ async function playAcceptedInvitation(
   const seatId = invitation.seatId;
   const planCache = new Map();
   const inFlightPlans = new Set();
+  const latestCheckpoints = new Map();
   let stopped = false;
 
   const heartbeatLoop = (async () => {
@@ -542,13 +606,21 @@ async function playAcceptedInvitation(
         referenceBundle,
         planCache,
         inFlightPlans,
+        latestCheckpoints,
         logger,
         updateRuntimeState,
       });
       const handleCheckpoint = (checkpoint) => {
-        if (!checkpoint || checkpoint.matchId !== activeMatchId) {
+        if (!checkpoint) {
+          if (activeMatchId) {
+            latestCheckpoints.delete(activeMatchId);
+          }
           return;
         }
+        if (checkpoint.matchId !== activeMatchId) {
+          return;
+        }
+        latestCheckpoints.set(checkpoint.matchId, checkpoint);
         void requestMirrorPlan(checkpoint.matchId).catch(async (error) => {
           await logger.warn('OpenClaw mirror_async checkpoint refresh failed.', {
             matchId: checkpoint.matchId,
@@ -589,6 +661,7 @@ async function playAcceptedInvitation(
         let pollMs = config.platformPollMs;
         const roomCheckpoint = extractActionableCheckpointFromRoom(room);
         if (room.matchId && roomCheckpoint) {
+          latestCheckpoints.set(room.matchId, roomCheckpoint);
           pollMs = await requestMirrorPlan(room.matchId);
         }
 
@@ -664,7 +737,7 @@ async function playAcceptedInvitation(
   }
 }
 
-async function main() {
+export async function main() {
   const args = parseArgs(process.argv.slice(2));
   const paths = resolveRunnerPaths(args.values.get('config') ?? process.env.WOLFDEN_CONFIG_PATH);
   await ensureHostStateDir(paths);
@@ -882,4 +955,14 @@ async function main() {
   }
 }
 
-await main();
+function isMainModule() {
+  if (!process.argv[1]) {
+    return false;
+  }
+
+  return import.meta.url === pathToFileURL(process.argv[1]).href;
+}
+
+if (isMainModule()) {
+  await main();
+}
