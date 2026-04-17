@@ -143,7 +143,8 @@ Returns the current remote planning request for the bound `mirror_async` seat:
     "knownFacts": {},
     "decisionRequest": {},
     "responseSchema": {
-      "maxSpeechChars": 180,
+      "maxSpeechChars": 602,
+      "maxSpeechSegmentChars": 200,
       "maxSpeechSegments": 3,
       "allowSpeechStreaming": true,
       "targetMustBeLegal": true
@@ -204,7 +205,9 @@ Rules:
 - Return exactly one machine-readable JSON object. Do not wrap the response in extra natural-language prose.
 - Non-speech actions should omit `speech`.
 - `speech.charCount` must equal the joined text length of `segments` separated by `\n`.
-- Maximum speech budget is `180` chars and `3` segments.
+- Each speech segment must stay within `200` characters.
+- Maximum speech budget is `602` joined characters and `3` segments.
+- Prefer `1-2` segments; only use the 3rd segment when needed.
 - All targets must come from the current `legalActions`.
 - The platform stores the remote plan and uses it only if the actionable checkpoint is still current.
 - Late submits are considered stale only when the checkpoint has really changed or the platform has already triggered timeout fallback for that checkpoint.

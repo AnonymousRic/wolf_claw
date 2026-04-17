@@ -6,6 +6,7 @@ import process from 'node:process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  __normalizeSpeechForTests,
   __resetOpenclawCompatCacheForTests,
   __trimMirrorPublicContextForTests,
   buildMirrorPlanFromOpenclaw,
@@ -65,7 +66,7 @@ function createPlanRequest() {
       minTargetCount: 0,
       maxTargetCount: 0,
       minTextLength: 1,
-      maxTextLength: 180,
+      maxTextLength: 602,
     }],
     privateState: {
       role: 'seer',
@@ -199,12 +200,13 @@ function createPlanRequest() {
           minTargetCount: 0,
           maxTargetCount: 0,
           minTextLength: 1,
-          maxTextLength: 180,
+          maxTextLength: 602,
         }],
         privateNotes: ['role:seer'],
       },
       responseSchema: {
-        maxSpeechChars: 180,
+        maxSpeechChars: 602,
+        maxSpeechSegmentChars: 200,
         maxSpeechSegments: 3,
         allowSpeechStreaming: true,
         targetMustBeLegal: true,
@@ -280,6 +282,52 @@ test('speech-phase public context trimming keeps only the latest timeline entrie
   assert.equal(trimmed.historyDigest.speechTimeline.length, 8);
   assert.deepEqual(trimmed.historyDigest.speechTimeline.map((entry) => entry.seq), [5, 6, 7, 8, 9, 10, 11, 12]);
   assert.equal(request.publicContext.historyDigest.speechTimeline.length, 12);
+});
+
+test('normalizeSpeech hard-wraps oversized segments and recomputes charCount', () => {
+  const speech = __normalizeSpeechForTests(
+    {
+      speech: {
+        segments: ['甲'.repeat(250)],
+        charCount: 999,
+      },
+    },
+    {
+      actionType: 'speech',
+      minTextLength: 1,
+      maxTextLength: 602,
+    },
+    {
+      maxSpeechChars: 602,
+      maxSpeechSegmentChars: 200,
+      maxSpeechSegments: 3,
+    },
+  );
+
+  assert.deepEqual(speech.segments.map((segment) => segment.length), [200, 50]);
+  assert.equal(speech.charCount, 251);
+});
+
+test('normalizeSpeech truncates to the joined total budget without violating segment caps', () => {
+  const speech = __normalizeSpeechForTests(
+    {
+      text: '乙'.repeat(700),
+    },
+    {
+      actionType: 'speech',
+      minTextLength: 1,
+      maxTextLength: 602,
+    },
+    {
+      maxSpeechChars: 602,
+      maxSpeechSegmentChars: 200,
+      maxSpeechSegments: 3,
+    },
+  );
+
+  assert.equal(speech.segments.length, 3);
+  assert.deepEqual(speech.segments.map((segment) => segment.length), [200, 200, 200]);
+  assert.equal(speech.charCount, 602);
 });
 
 test('buildMirrorPlanFromOpenclaw sends the modern OpenClaw request shape', async () => {

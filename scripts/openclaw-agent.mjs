@@ -5,8 +5,9 @@ import {
   DEFAULT_OPENCLAW_THINKING,
 } from './common.mjs';
 
-const OPENCLAW_MAX_SPEECH_CHARS = 180;
+const OPENCLAW_MAX_SPEECH_SEGMENT_CHARS = 200;
 const OPENCLAW_MAX_SPEECH_SEGMENTS = 3;
+const OPENCLAW_MAX_SPEECH_CHARS = 602;
 const OPENCLAW_MAX_PLATFORM_TIMEOUT_MS = 30_000;
 const SPEECH_PHASES = new Set(['sheriff_speech', 'day_speech', 'day_pk_speech', 'last_words']);
 const SPEECH_HISTORY_LIMITS = {
@@ -23,6 +24,98 @@ export function __resetOpenclawCompatCacheForTests() {
 
 function compactText(text) {
   return String(text ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizePositiveInteger(value, fallback) {
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function resolveSpeechBudget(legalAction, responseSchema = null) {
+  const schemaMaxSegments = normalizePositiveInteger(
+    responseSchema?.maxSpeechSegments,
+    OPENCLAW_MAX_SPEECH_SEGMENTS,
+  );
+  const schemaMaxSegmentChars = normalizePositiveInteger(
+    responseSchema?.maxSpeechSegmentChars,
+    OPENCLAW_MAX_SPEECH_SEGMENT_CHARS,
+  );
+  const schemaMaxSpeechChars = normalizePositiveInteger(
+    responseSchema?.maxSpeechChars,
+    OPENCLAW_MAX_SPEECH_CHARS,
+  );
+  const legalMaxSpeechChars = normalizePositiveInteger(
+    legalAction?.maxTextLength,
+    schemaMaxSpeechChars,
+  );
+
+  return {
+    maxSpeechSegments: Math.min(OPENCLAW_MAX_SPEECH_SEGMENTS, schemaMaxSegments),
+    maxSpeechSegmentChars: Math.min(OPENCLAW_MAX_SPEECH_SEGMENT_CHARS, schemaMaxSegmentChars),
+    maxSpeechChars: Math.min(OPENCLAW_MAX_SPEECH_CHARS, schemaMaxSpeechChars, legalMaxSpeechChars),
+  };
+}
+
+function splitSpeechIntoLines(text) {
+  return String(text ?? '')
+    .split(/\r?\n+/)
+    .map((segment) => compactText(segment))
+    .filter(Boolean);
+}
+
+function wrapSpeechSegment(segment, maxSegmentChars) {
+  const normalized = compactText(segment);
+  if (!normalized) {
+    return [];
+  }
+
+  const chunks = [];
+  for (let index = 0; index < normalized.length; index += maxSegmentChars) {
+    chunks.push(normalized.slice(index, index + maxSegmentChars));
+  }
+  return chunks;
+}
+
+function normalizeSpeechSegments(rawSegments, speechBudget) {
+  const normalizedSegments = [];
+  let totalChars = 0;
+
+  for (const rawSegment of rawSegments) {
+    const wrappedSegments = wrapSpeechSegment(rawSegment, speechBudget.maxSpeechSegmentChars);
+    for (const wrappedSegment of wrappedSegments) {
+      if (normalizedSegments.length >= speechBudget.maxSpeechSegments) {
+        break;
+      }
+
+      const separatorChars = totalChars > 0 ? 1 : 0;
+      const remainingChars = speechBudget.maxSpeechChars - totalChars - separatorChars;
+      if (remainingChars <= 0) {
+        break;
+      }
+
+      const chunk = wrappedSegment.slice(0, Math.min(speechBudget.maxSpeechSegmentChars, remainingChars));
+      if (!chunk) {
+        break;
+      }
+
+      normalizedSegments.push(chunk);
+      totalChars += separatorChars + chunk.length;
+
+      if (chunk.length < wrappedSegment.length) {
+        break;
+      }
+    }
+
+    if (normalizedSegments.length >= speechBudget.maxSpeechSegments || totalChars >= speechBudget.maxSpeechChars) {
+      break;
+    }
+  }
+
+  const fullText = normalizedSegments.join('\n');
+  return {
+    segments: normalizedSegments,
+    fullText,
+    charCount: fullText.length,
+  };
 }
 
 function resolvePhaseReferenceKey(phase) {
@@ -84,6 +177,29 @@ function buildReferenceSummary(referenceBundle, role, phase) {
   };
 }
 
+function buildSpeechPromptRules(payload) {
+  const responseSchema = payload?.decisionContext?.responseSchema ?? null;
+  const legalActions = Array.isArray(payload?.legalActions)
+    ? payload.legalActions
+    : Array.isArray(payload?.decisionContext?.decisionRequest?.legalActions)
+      ? payload.decisionContext.decisionRequest.legalActions
+      : [];
+  const speechAction = legalActions.find((action) => (
+    action?.actionType === 'speech' || (action?.minTextLength ?? 0) > 0
+  )) ?? null;
+  const speechBudget = resolveSpeechBudget(speechAction, responseSchema);
+
+  return [
+    'If the chosen legal action requires speech, include speech.segments and speech.charCount.',
+    'If the chosen legal action does not require speech, omit speech.',
+    `If speech is present, use at most ${speechBudget.maxSpeechSegments} segments.`,
+    `Each speech segment must be at most ${speechBudget.maxSpeechSegmentChars} characters.`,
+    `The joined speech text must be at most ${speechBudget.maxSpeechChars} characters.`,
+    'speech.charCount must equal speech.segments.join("\\n").length exactly.',
+    'Prefer 1-2 segments. Only use the 3rd segment when necessary.',
+  ];
+}
+
 function buildSharedPromptBody({ payload, role, phase }) {
   return [
     'You are operating exactly one WolfDen player seat through OpenClaw.',
@@ -91,8 +207,7 @@ function buildSharedPromptBody({ payload, role, phase }) {
     'Never output markdown, code fences, or explanatory prose outside the JSON object.',
     'Only choose an actionType that exists in legalActions.',
     'Only choose targets from allowedTargetIds, and satisfy min/max target counts.',
-    'If the chosen legal action requires speech, include speech.segments and speech.charCount.',
-    'If the chosen legal action does not require speech, omit speech.',
+    ...buildSpeechPromptRules(payload),
     'reasoningSummary must be short and should explain the role/phase logic behind the action.',
     `Current role: ${role || 'unknown'}. Current phase: ${phase || 'unknown'}.`,
     'Output schema:',
@@ -462,31 +577,21 @@ function parseOpenclawOutput(stdout, predicate) {
   return null;
 }
 
-function normalizeSpeech(decision, legalAction) {
+function normalizeSpeech(decision, legalAction, responseSchema = null) {
   const requiresSpeech = (legalAction?.minTextLength ?? 0) > 0 || legalAction?.actionType === 'speech';
-  let segments = null;
+  const speechBudget = resolveSpeechBudget(legalAction, responseSchema);
+  let rawSegments = [];
 
   if (decision?.speech && typeof decision.speech === 'object' && Array.isArray(decision.speech.segments)) {
-    segments = decision.speech.segments;
+    rawSegments = decision.speech.segments.flatMap((segment) => splitSpeechIntoLines(segment));
   } else if (typeof decision?.speech === 'string') {
-    segments = decision.speech
-      .split(/\n+/)
-      .map((segment) => compactText(segment))
-      .filter(Boolean);
+    rawSegments = splitSpeechIntoLines(decision.speech);
   } else if (typeof decision?.text === 'string') {
-    segments = decision.text
-      .split(/\n+/)
-      .map((segment) => compactText(segment))
-      .filter(Boolean);
+    rawSegments = splitSpeechIntoLines(decision.text);
   }
 
-  const normalizedSegments = segments
-    ? segments
-        .map((segment) => compactText(segment))
-        .filter(Boolean)
-        .slice(0, OPENCLAW_MAX_SPEECH_SEGMENTS)
-    : [];
-  const fullText = normalizedSegments.join('\n').slice(0, OPENCLAW_MAX_SPEECH_CHARS);
+  const normalizedSpeech = normalizeSpeechSegments(rawSegments, speechBudget);
+  const { fullText } = normalizedSpeech;
 
   if (!requiresSpeech && !fullText) {
     return null;
@@ -500,14 +605,18 @@ function normalizeSpeech(decision, legalAction) {
     throw new Error('OpenClaw returned speech shorter than the required minimum.');
   }
 
-  if (fullText.length > (legalAction?.maxTextLength ?? OPENCLAW_MAX_SPEECH_CHARS)) {
+  if (fullText.length > speechBudget.maxSpeechChars) {
     throw new Error('OpenClaw returned speech longer than the legal limit.');
   }
 
   return {
-    segments: fullText.split('\n').filter(Boolean).slice(0, OPENCLAW_MAX_SPEECH_SEGMENTS),
-    charCount: fullText.length,
+    segments: normalizedSpeech.segments,
+    charCount: normalizedSpeech.charCount,
   };
+}
+
+export function __normalizeSpeechForTests(decision, legalAction, responseSchema = null) {
+  return normalizeSpeech(decision, legalAction, responseSchema);
 }
 
 function normalizeTargets(decision, legalAction) {
@@ -538,7 +647,7 @@ function normalizeTargets(decision, legalAction) {
     : { targetPlayerId: targetIds[0] };
 }
 
-function normalizeDecision(decision, legalActions) {
+function normalizeDecision(decision, legalActions, responseSchema = null) {
   if (!decision || typeof decision !== 'object') {
     throw new Error('OpenClaw agent did not return a decision object.');
   }
@@ -552,7 +661,7 @@ function normalizeDecision(decision, legalActions) {
     actionType: legalAction.actionType,
     ...normalizeTargets(decision, legalAction),
   };
-  const speech = normalizeSpeech(decision, legalAction);
+  const speech = normalizeSpeech(decision, legalAction, responseSchema);
   if (speech) {
     normalized.speech = speech;
   }
@@ -648,6 +757,7 @@ export async function buildMirrorPlanFromOpenclaw({
   const decision = normalizeDecision(
     parseOpenclawOutput(result.output, (value) => typeof value?.actionType === 'string'),
     planRequest.legalActions ?? [],
+    planRequest.decisionContext?.responseSchema ?? null,
   );
 
   return {
@@ -687,6 +797,7 @@ export async function buildSeatActionFromOpenclaw({
   const decision = normalizeDecision(
     parseOpenclawOutput(result.output, (value) => typeof value?.actionType === 'string'),
     turn.legalActions ?? [],
+    null,
   );
 
   return {

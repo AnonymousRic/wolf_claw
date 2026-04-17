@@ -252,8 +252,13 @@ function buildDecisionContextFromRequest(request) {
   };
 }
 
-function toSpeechPlan(text, maxSpeechChars = 180, maxSpeechSegments = 3) {
-  const normalized = String(text ?? '').trim().slice(0, maxSpeechChars);
+function toSpeechPlan(
+  text,
+  maxSpeechChars = 602,
+  maxSpeechSegments = 3,
+  maxSpeechSegmentChars = 200,
+) {
+  const normalized = String(text ?? '').trim();
   if (!normalized) {
     return null;
   }
@@ -262,12 +267,38 @@ function toSpeechPlan(text, maxSpeechChars = 180, maxSpeechSegments = 3) {
     .split(/\n+/)
     .map((segment) => segment.trim())
     .filter(Boolean)
+    .flatMap((segment) => {
+      const wrapped = [];
+      for (let index = 0; index < segment.length; index += maxSpeechSegmentChars) {
+        wrapped.push(segment.slice(index, index + maxSpeechSegmentChars));
+      }
+      return wrapped;
+    })
     .slice(0, maxSpeechSegments);
-  const finalSegments = segments.length > 0 ? segments : [normalized];
-  const fullText = finalSegments.join('\n').slice(0, maxSpeechChars);
+  const finalSegments = [];
+  let totalChars = 0;
+
+  for (const segment of (segments.length > 0 ? segments : [normalized.slice(0, maxSpeechSegmentChars)])) {
+    if (finalSegments.length >= maxSpeechSegments) {
+      break;
+    }
+    const separatorChars = totalChars > 0 ? 1 : 0;
+    const remainingChars = maxSpeechChars - totalChars - separatorChars;
+    if (remainingChars <= 0) {
+      break;
+    }
+    const chunk = segment.slice(0, Math.min(maxSpeechSegmentChars, remainingChars));
+    if (!chunk) {
+      break;
+    }
+    finalSegments.push(chunk);
+    totalChars += separatorChars + chunk.length;
+  }
+
+  const fullText = finalSegments.join('\n');
 
   return {
-    segments: fullText.split('\n').filter(Boolean).slice(0, maxSpeechSegments),
+    segments: finalSegments,
     charCount: fullText.length,
   };
 }
