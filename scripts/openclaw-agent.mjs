@@ -10,7 +10,44 @@ const OPENCLAW_MAX_SPEECH_SEGMENTS = 3;
 const OPENCLAW_MAX_SPEECH_CHARS = 602;
 const OPENCLAW_MAX_PLATFORM_TIMEOUT_MS = 30_000;
 const SPEECH_PHASES = new Set(['sheriff_speech', 'day_speech', 'day_pk_speech', 'last_words']);
-const SPEECH_HISTORY_LIMITS = {
+const COMPACT_DECISION_PHASES = new Set(['day_vote', 'day_pk_vote', 'sheriff_vote', 'sheriff_direction', 'sheriff_transfer']);
+const SPEECH_PROMPT_LIMITS = {
+  deathTimeline: 3,
+  sheriffTimeline: 3,
+  voteTimeline: 4,
+  speechTimeline: 6,
+  recentPublicEvents: 4,
+};
+const DECISION_PROMPT_LIMITS = {
+  deathTimeline: 3,
+  sheriffTimeline: 3,
+  voteTimeline: 4,
+  speechTimeline: 4,
+  recentPublicEvents: 4,
+};
+const REFERENCE_LIMITS = {
+  core: 400,
+  role: 500,
+  phase: 900,
+};
+
+function getPromptTrimLimits(phase) {
+  if (SPEECH_PHASES.has(phase)) {
+    return SPEECH_PROMPT_LIMITS;
+  }
+
+  if (COMPACT_DECISION_PHASES.has(phase)) {
+    return DECISION_PROMPT_LIMITS;
+  }
+
+  return null;
+}
+
+function shouldOmitPhaseReference(phase) {
+  return SPEECH_PHASES.has(phase) || COMPACT_DECISION_PHASES.has(phase);
+}
+
+const LEGACY_SPEECH_HISTORY_LIMITS = {
   deathTimeline: 4,
   sheriffTimeline: 4,
   voteTimeline: 6,
@@ -151,27 +188,29 @@ function buildReferenceSummary(referenceBundle, role, phase) {
   const roleDocument = referenceBundle?.roleDocuments?.[role]
     ?? referenceBundle?.roleDocuments?.villager
     ?? null;
-  const phaseDocument = referenceBundle?.phaseDocuments?.[resolvePhaseReferenceKey(phase)]
-    ?? referenceBundle?.phaseDocuments?.day
-    ?? null;
+  const phaseDocument = shouldOmitPhaseReference(phase)
+    ? null
+    : referenceBundle?.phaseDocuments?.[resolvePhaseReferenceKey(phase)]
+      ?? referenceBundle?.phaseDocuments?.day
+      ?? null;
 
   return {
     core: Array.isArray(referenceBundle?.coreDocuments)
       ? referenceBundle.coreDocuments.map((document) => ({
           path: document.path,
-          content: trimReferenceContent(document.content, 700),
+          content: trimReferenceContent(document.content, REFERENCE_LIMITS.core),
         }))
       : [],
     role: roleDocument
       ? {
           path: roleDocument.path,
-          content: trimReferenceContent(roleDocument.content),
+          content: trimReferenceContent(roleDocument.content, REFERENCE_LIMITS.role),
         }
       : null,
     phase: phaseDocument
       ? {
           path: phaseDocument.path,
-          content: trimReferenceContent(phaseDocument.content),
+          content: trimReferenceContent(phaseDocument.content, REFERENCE_LIMITS.phase),
         }
       : null,
   };
@@ -228,22 +267,30 @@ export function __trimMirrorPublicContextForTests(publicContext, phase) {
     return publicContext ?? null;
   }
 
-  if (!SPEECH_PHASES.has(phase)) {
+  const limits = getPromptTrimLimits(phase);
+  if (!limits) {
     return publicContext;
   }
 
+  const backgroundDigest = publicContext.backgroundDigest && typeof publicContext.backgroundDigest === 'object'
+    ? publicContext.backgroundDigest
+    : {};
   const historyDigest = publicContext.historyDigest && typeof publicContext.historyDigest === 'object'
     ? publicContext.historyDigest
     : {};
 
   return {
     ...publicContext,
+    backgroundDigest: {
+      ...backgroundDigest,
+      recentPublicEvents: trimDigestEntries(backgroundDigest.recentPublicEvents, limits.recentPublicEvents),
+    },
     historyDigest: {
       ...historyDigest,
-      deathTimeline: trimDigestEntries(historyDigest.deathTimeline, SPEECH_HISTORY_LIMITS.deathTimeline),
-      sheriffTimeline: trimDigestEntries(historyDigest.sheriffTimeline, SPEECH_HISTORY_LIMITS.sheriffTimeline),
-      voteTimeline: trimDigestEntries(historyDigest.voteTimeline, SPEECH_HISTORY_LIMITS.voteTimeline),
-      speechTimeline: trimDigestEntries(historyDigest.speechTimeline, SPEECH_HISTORY_LIMITS.speechTimeline),
+      deathTimeline: trimDigestEntries(historyDigest.deathTimeline, limits.deathTimeline),
+      sheriffTimeline: trimDigestEntries(historyDigest.sheriffTimeline, limits.sheriffTimeline),
+      voteTimeline: trimDigestEntries(historyDigest.voteTimeline, limits.voteTimeline),
+      speechTimeline: trimDigestEntries(historyDigest.speechTimeline, limits.speechTimeline),
     },
   };
 }

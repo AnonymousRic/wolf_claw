@@ -224,6 +224,16 @@ function createPlanRequest() {
   };
 }
 
+function extractPromptPayload(message) {
+  const marker = 'Decision payload:\n';
+  const index = String(message ?? '').lastIndexOf(marker);
+  if (index < 0) {
+    return null;
+  }
+
+  return JSON.parse(String(message).slice(index + marker.length).trim());
+}
+
 const referenceBundle = {
   coreDocuments: [{ path: 'platform-contract.md', content: 'contract' }],
   roleDocuments: {
@@ -268,6 +278,7 @@ test('buildMirrorPlanFromOpenclaw converts a valid OpenClaw agent response into 
 
 test('speech-phase public context trimming keeps only the latest timeline entries', () => {
   const request = createPlanRequest();
+  request.publicContext.backgroundDigest.recentPublicEvents = Array.from({ length: 7 }, (_, index) => `event-${index + 1}`);
   request.publicContext.historyDigest = {
     deathTimeline: Array.from({ length: 7 }, (_, index) => ({ seq: index + 1 })),
     sheriffTimeline: Array.from({ length: 6 }, (_, index) => ({ seq: index + 1 })),
@@ -276,12 +287,34 @@ test('speech-phase public context trimming keeps only the latest timeline entrie
   };
 
   const trimmed = __trimMirrorPublicContextForTests(request.publicContext, 'day_speech');
-  assert.equal(trimmed.historyDigest.deathTimeline.length, 4);
-  assert.equal(trimmed.historyDigest.sheriffTimeline.length, 4);
-  assert.equal(trimmed.historyDigest.voteTimeline.length, 6);
-  assert.equal(trimmed.historyDigest.speechTimeline.length, 8);
-  assert.deepEqual(trimmed.historyDigest.speechTimeline.map((entry) => entry.seq), [5, 6, 7, 8, 9, 10, 11, 12]);
+  assert.equal(trimmed.backgroundDigest.recentPublicEvents.length, 4);
+  assert.deepEqual(trimmed.backgroundDigest.recentPublicEvents, ['event-4', 'event-5', 'event-6', 'event-7']);
+  assert.equal(trimmed.historyDigest.deathTimeline.length, 3);
+  assert.equal(trimmed.historyDigest.sheriffTimeline.length, 3);
+  assert.equal(trimmed.historyDigest.voteTimeline.length, 4);
+  assert.equal(trimmed.historyDigest.speechTimeline.length, 6);
+  assert.deepEqual(trimmed.historyDigest.speechTimeline.map((entry) => entry.seq), [7, 8, 9, 10, 11, 12]);
   assert.equal(request.publicContext.historyDigest.speechTimeline.length, 12);
+});
+
+test('decision-phase public context trimming keeps only the compact vote-era digest', () => {
+  const request = createPlanRequest();
+  request.publicContext.backgroundDigest.recentPublicEvents = Array.from({ length: 6 }, (_, index) => `vote-${index + 1}`);
+  request.publicContext.historyDigest = {
+    deathTimeline: Array.from({ length: 7 }, (_, index) => ({ seq: index + 1 })),
+    sheriffTimeline: Array.from({ length: 6 }, (_, index) => ({ seq: index + 1 })),
+    voteTimeline: Array.from({ length: 9 }, (_, index) => ({ seq: index + 1 })),
+    speechTimeline: Array.from({ length: 12 }, (_, index) => ({ seq: index + 1 })),
+  };
+
+  const trimmed = __trimMirrorPublicContextForTests(request.publicContext, 'day_vote');
+  assert.equal(trimmed.backgroundDigest.recentPublicEvents.length, 4);
+  assert.deepEqual(trimmed.backgroundDigest.recentPublicEvents, ['vote-3', 'vote-4', 'vote-5', 'vote-6']);
+  assert.equal(trimmed.historyDigest.deathTimeline.length, 3);
+  assert.equal(trimmed.historyDigest.sheriffTimeline.length, 3);
+  assert.equal(trimmed.historyDigest.voteTimeline.length, 4);
+  assert.equal(trimmed.historyDigest.speechTimeline.length, 4);
+  assert.deepEqual(trimmed.historyDigest.speechTimeline.map((entry) => entry.seq), [9, 10, 11, 12]);
 });
 
 test('normalizeSpeech hard-wraps oversized segments and recomputes charCount', () => {
@@ -348,6 +381,133 @@ test('buildMirrorPlanFromOpenclaw sends the modern OpenClaw request shape', asyn
 
     assert.equal(result.payload.actionType, 'speech');
   });
+});
+
+test('buildMirrorPlanFromOpenclaw forwards longer platform deadlines into the local timeout budget', async () => {
+  await withFakeOpenclawEnv({
+    WOLFDEN_FAKE_OPENCLAW_MODE: 'success',
+    WOLFDEN_FAKE_OPENCLAW_RESPONSE_SHAPE: 'result-payloads-text',
+  }, async () => {
+    const request = createPlanRequest();
+    request.deadlineMs = 30_000;
+    request.decisionContext.phase.modelSoftTimeoutMs = 30_000;
+    request.decisionContext.phase.modelHardTimeoutMs = 30_000;
+    request.publicContext.telemetry.lastPlanDeadlineMs = 30_000;
+
+    const result = await buildMirrorPlanFromOpenclaw({
+      config: {
+        agentName: 'unit-openclaw',
+        openclawAgentId: 'main',
+        openclawThinking: 'medium',
+      },
+      openclawPlayerId: 'oc-player-1',
+      planRequest: request,
+      referenceBundle,
+    });
+
+    assert.equal(result.deadlineMs, 30_000);
+    assert.ok(result.timeoutSeconds >= 29);
+  });
+});
+
+test('buildMirrorPlanFromOpenclaw omits phase references for speech, vote, and transfer checkpoints', async () => {
+  const recordDir = await mkdtemp(path.join(tmpdir(), 'wolfden-openclaw-agent-'));
+  const recordPath = path.join(recordDir, 'requests.ndjson');
+  const phaseRequests = [
+    {
+      phase: 'day_speech',
+      action: {
+        actionType: 'speech',
+        label: 'Speech',
+        prompt: 'Say something',
+        allowedTargetIds: [],
+        minTargetCount: 0,
+        maxTargetCount: 0,
+        minTextLength: 1,
+        maxTextLength: 602,
+      },
+    },
+    {
+      phase: 'day_vote',
+      action: {
+        actionType: 'vote',
+        label: 'Vote',
+        prompt: 'Choose a target',
+        allowedTargetIds: ['player-1', 'player-2'],
+        minTargetCount: 1,
+        maxTargetCount: 1,
+        minTextLength: 0,
+        maxTextLength: 0,
+      },
+    },
+    {
+      phase: 'sheriff_transfer',
+      action: {
+        actionType: 'sheriff_transfer',
+        label: 'Transfer',
+        prompt: 'Transfer the badge',
+        allowedTargetIds: ['player-1', 'player-2'],
+        minTargetCount: 1,
+        maxTargetCount: 1,
+        minTextLength: 0,
+        maxTextLength: 0,
+      },
+    },
+  ];
+
+  await withFakeOpenclawEnv({
+    WOLFDEN_FAKE_OPENCLAW_MODE: 'validate-request',
+    WOLFDEN_FAKE_OPENCLAW_RECORD_PATH: recordPath,
+  }, async () => {
+    for (const phaseRequest of phaseRequests) {
+      const request = createPlanRequest();
+      request.phase = phaseRequest.phase;
+      request.legalActions = [phaseRequest.action];
+      request.publicContext.backgroundDigest.phase = phaseRequest.phase;
+      request.decisionContext.phase.phase = phaseRequest.phase;
+      request.decisionContext.decisionRequest.phase = phaseRequest.phase;
+      request.decisionContext.decisionRequest.legalActions = [phaseRequest.action];
+      request.decisionContext.baselineDecision = {
+        actionType: phaseRequest.action.actionType,
+        targetPlayerId: phaseRequest.action.allowedTargetIds[0] ?? null,
+        targetPlayerIds: null,
+        ...(phaseRequest.action.actionType === 'speech'
+          ? {
+              speech: {
+                segments: ['baseline speech'],
+                charCount: 15,
+              },
+            }
+          : {}),
+      };
+
+      await buildMirrorPlanFromOpenclaw({
+        config: {
+          agentName: 'unit-openclaw',
+          openclawAgentId: 'main',
+          openclawThinking: 'medium',
+        },
+        openclawPlayerId: 'oc-player-1',
+        planRequest: request,
+        referenceBundle,
+      });
+    }
+  });
+
+  const records = (await readFile(recordPath, 'utf8'))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+
+  assert.equal(records.length, phaseRequests.length);
+  for (const record of records) {
+    const payload = extractPromptPayload(record.params?.message);
+    assert.ok(payload);
+    assert.equal(payload.references.phase, null);
+    assert.equal(payload.references.core[0]?.content, 'contract');
+    assert.ok(payload.references.role?.content?.includes('reference'));
+  }
 });
 
 test('buildMirrorPlanFromOpenclaw retries once without idempotencyKey when the CLI rejects it', async () => {
