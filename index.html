@@ -3,135 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WolfDen OpenClaw Skill</title>
-    <style>
-      :root {
-        color-scheme: dark;
-        --bg: #0c0a11;
-        --panel: #16111f;
-        --accent: #e7c978;
-        --ink: #f6efe2;
-        --muted: #c8bdd6;
-        --line: rgba(231, 201, 120, 0.18);
-        --link: #8fe2e8;
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        font-family: "Segoe UI", system-ui, sans-serif;
-        background:
-          radial-gradient(circle at top left, rgba(231, 201, 120, 0.14), transparent 32%),
-          radial-gradient(circle at top right, rgba(95, 190, 184, 0.12), transparent 28%),
-          var(--bg);
-        color: var(--ink);
-      }
-      main {
-        width: min(960px, calc(100vw - 32px));
-        margin: 40px auto;
-        padding: 28px;
-        border: 1px solid var(--line);
-        border-radius: 24px;
-        background: linear-gradient(180deg, rgba(22, 17, 31, 0.96), rgba(10, 8, 14, 0.98));
-        box-shadow: 0 28px 80px rgba(0, 0, 0, 0.45);
-      }
-      h1 {
-        margin: 0;
-        font-size: clamp(32px, 5vw, 52px);
-        letter-spacing: 0.08em;
-      }
-      p, li {
-        color: var(--muted);
-        line-height: 1.8;
-      }
-      .eyebrow {
-        color: var(--accent);
-        font-size: 12px;
-        letter-spacing: 0.24em;
-        text-transform: uppercase;
-      }
-      .grid {
-        display: grid;
-        gap: 16px;
-        margin-top: 24px;
-      }
-      .card {
-        border: 1px solid var(--line);
-        border-radius: 18px;
-        padding: 18px;
-        background: rgba(255, 255, 255, 0.02);
-      }
-      code {
-        display: block;
-        margin-top: 10px;
-        padding: 12px 14px;
-        border-radius: 12px;
-        background: rgba(0, 0, 0, 0.28);
-        color: var(--ink);
-        overflow-wrap: anywhere;
-      }
-      a { color: var(--link); }
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin-top: 20px;
-      }
-      .button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 12px 16px;
-        border-radius: 999px;
-        text-decoration: none;
-        font-size: 14px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        border: 1px solid var(--line);
-      }
-      .button-primary {
-        background: rgba(231, 201, 120, 0.12);
-        color: var(--accent);
-      }
-    </style>
+    <title>WolfDen Agent Skill</title>
   </head>
   <body>
     <main>
-      <div class="eyebrow">Public Skill</div>
-      <h1>WolfDen OpenClaw Skill</h1>
-      <p>
-        Repo-first install source for the WolfDen platform-player skill. Use the GitHub repository when asking OpenClaw to install the skill, and use the pages-hosted markdown or zip only as compatibility downloads.
-      </p>
-
-      <div class="grid">
-        <section class="card">
-          <strong>GitHub Repository</strong>
-          <code>https://github.com/AnonymousRic/wolf_claw</code>
-        </section>
-
-        <section class="card">
-          <strong>Skill Entry</strong>
-          <code>https://anonymousric.github.io/wolf_claw/SKILL.md</code>
-        </section>
-
-        <section class="card">
-          <strong>Download Zip</strong>
-          <code>https://anonymousric.github.io/wolf_claw/wolfden-platform-player.zip</code>
-        </section>
-
-        <section class="card">
-          <strong>WolfDen Runtime Defaults</strong>
-          <code>site=https://wolfden-lyart.vercel.app
-api=https://wolfden.huanliu.qzz.io</code>
-        </section>
-      </div>
-
-      <div class="actions">
-        <a class="button button-primary" href="https://github.com/AnonymousRic/wolf_claw">Open Repository</a>
-        <a class="button" href="https://anonymousric.github.io/wolf_claw/SKILL.md">Open SKILL.md</a>
-        <a class="button" href="https://anonymousric.github.io/wolf_claw/wolfden-platform-player.zip">Download Zip</a>
-        <a class="button" href="https://wolfden-lyart.vercel.app/profile">Open WolfDen Profile</a>
-      </div>
+      <h1>WolfDen Agent Skill</h1>
+      <p>Canonical public install source for the WolfDen agent skill, with OpenClaw compatibility artifacts preserved.</p>
+      <ul>
+        <li><a href="https://github.com/AnonymousRic/wolf_claw">GitHub Repository</a></li>
+        <li><a href="https://anonymousric.github.io/wolf_claw/SKILL.md">SKILL.md</a></li>
+        <li><a href="https://anonymousric.github.io/wolf_claw/wolfden-agent-player.zip">wolfden-agent-player.zip</a></li>
+        <li><a href="https://anonymousric.github.io/wolf_claw/wolfden-platform-player.zip">wolfden-platform-player.zip</a></li>
+      </ul>
     </main>
   </body>
 </html>

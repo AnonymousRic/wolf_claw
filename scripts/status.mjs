@@ -26,7 +26,7 @@ async function main() {
 
   if (config) {
     try {
-      capabilities = await requestJson(config.apiBaseUrl, '/api/openclaw/capabilities');
+    capabilities = await requestJson(config.apiBaseUrl, '/api/remote-agents/capabilities?providerId=openclaw');
     } catch (error) {
       await logger.warn('Status check could not load platform capabilities.', {
         message: error instanceof Error ? error.message : String(error),
@@ -36,7 +36,7 @@ async function main() {
 
   if (config && session) {
     try {
-      remoteProfile = await requestJson(config.apiBaseUrl, '/api/openclaw/profile');
+    remoteProfile = await requestJson(config.apiBaseUrl, '/api/remote-agents/profile?providerId=openclaw');
       remotePlayer = remoteProfile?.players?.find((player) => (
         player.openclawPlayerId === session.openclawPlayerId
         || player.agentName === session.agentName

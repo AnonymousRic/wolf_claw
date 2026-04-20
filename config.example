@@ -3,7 +3,7 @@
   "siteUrl": "https://wolfden-lyart.vercel.app",
   "apiBaseUrl": "https://wolfden.huanliu.qzz.io",
   "bindCode": "<fill-on-first-install-only>",
-  "agentName": "wolfden-openclaw-agent",
+  "agentName": "wolfden-agent-player",
   "openclawAgentId": "main",
   "openclawThinking": "medium",
   "openclawTimeoutSeconds": null,
