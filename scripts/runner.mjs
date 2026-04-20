@@ -114,7 +114,7 @@ async function getRoom(apiBaseUrl, roomId) {
 }
 
 async function updatePlatformPreferences(apiBaseUrl, openclawPlayerId, preferences) {
-  return requestJson(apiBaseUrl, `/api/openclaw/players/${openclawPlayerId}/preferences`, {
+  return requestJson(apiBaseUrl, `/api/remote-agents/participants/${openclawPlayerId}/preferences?providerId=openclaw`, {
     method: 'PATCH',
     body: preferences,
   });
@@ -122,7 +122,7 @@ async function updatePlatformPreferences(apiBaseUrl, openclawPlayerId, preferenc
 
 async function getCapabilities(apiBaseUrl) {
   try {
-    return await requestJson(apiBaseUrl, '/api/openclaw/capabilities');
+    return await requestJson(apiBaseUrl, '/api/remote-agents/capabilities?providerId=openclaw');
   } catch {
     return { ...DEFAULT_CAPABILITIES };
   }
@@ -259,21 +259,21 @@ function createMatchSnapshotSubscription({ apiBaseUrl, matchId, logger, onCheckp
 }
 
 async function getMirrorPlanRequest(apiBaseUrl, matchId, sessionToken) {
-  return requestJson(apiBaseUrl, `/api/openclaw/matches/${matchId}/plan-request`, {
-    headers: { 'x-openclaw-session': sessionToken },
+  return requestJson(apiBaseUrl, `/api/remote-agents/matches/${matchId}/task-request?providerId=openclaw`, {
+    headers: { 'x-remote-agent-session': sessionToken },
   });
 }
 
 async function submitMirrorPlan(apiBaseUrl, matchId, sessionToken, payload) {
-  return requestJson(apiBaseUrl, `/api/openclaw/matches/${matchId}/plan`, {
+  return requestJson(apiBaseUrl, `/api/remote-agents/matches/${matchId}/task-result?providerId=openclaw`, {
     method: 'POST',
-    headers: { 'x-openclaw-session': sessionToken },
+    headers: { 'x-remote-agent-session': sessionToken },
     body: payload,
   });
 }
 
 async function heartbeatPlatformSession(apiBaseUrl, sessionToken, ready) {
-  return requestJson(apiBaseUrl, '/api/openclaw/agents/heartbeat', {
+  return requestJson(apiBaseUrl, '/api/remote-agents/providers/openclaw/heartbeat', {
     method: 'POST',
     body: {
       sessionToken,
@@ -342,7 +342,7 @@ async function registerPlatformSession(config, paths, logger, ready = false) {
     );
   }
 
-  const registration = await requestJson(config.apiBaseUrl, '/api/openclaw/agents/register', {
+  const registration = await requestJson(config.apiBaseUrl, '/api/remote-agents/providers/openclaw/register', {
     method: 'POST',
     body: {
       bindCode: config.bindCode,
@@ -888,8 +888,8 @@ export async function main() {
 
     let invitations;
     try {
-      invitations = await requestJson(config.apiBaseUrl, '/api/openclaw/agents/invitations', {
-        headers: { 'x-openclaw-session': session.sessionToken },
+      invitations = await requestJson(config.apiBaseUrl, '/api/remote-agents/providers/openclaw/invitations', {
+        headers: { 'x-remote-agent-session': session.sessionToken },
       });
     } catch (error) {
       if (error instanceof HttpError && error.statusCode === 401) {
@@ -922,7 +922,7 @@ export async function main() {
     try {
       const resolved = await requestJson(
         config.apiBaseUrl,
-        `/api/openclaw/invitations/${pendingInvitation.inviteId}/respond`,
+        `/api/remote-agents/invitations/${pendingInvitation.inviteId}/respond?providerId=openclaw`,
         {
           method: 'POST',
           body: {

@@ -14,7 +14,7 @@ export const RUNTIME_STATE_SCHEMA_VERSION = 1;
 export const DEFAULT_REPO_URL = 'https://github.com/AnonymousRic/wolf_claw';
 export const DEFAULT_SITE_URL = 'https://wolfden-lyart.vercel.app';
 export const DEFAULT_API_BASE_URL = 'https://wolfden.huanliu.qzz.io';
-export const DEFAULT_AGENT_NAME = 'wolfden-openclaw-agent';
+export const DEFAULT_AGENT_NAME = 'wolfden-agent-player';
 export const DEFAULT_OPENCLAW_AGENT_ID = 'main';
 export const DEFAULT_OPENCLAW_THINKING = 'medium';
 export const DEFAULT_ALLOWED_MATCH_MODES = ['human_mixed', 'ai_arena'];
@@ -36,7 +36,7 @@ export const DEFAULT_PLATFORM_HEARTBEAT_INTERVAL_MS = 15_000;
 export const DEFAULT_HOST_STATE_DIR = path.join(
   homedir(),
   '.wolfden',
-  'openclaw-platform-player',
+  'agent-player',
 );
 
 export function normalizeBaseUrl(baseUrl) {
@@ -138,8 +138,9 @@ export function parseArgs(argv) {
 }
 
 export function resolveHostStateDir() {
-  return process.env.WOLFDEN_HOST_STATE_DIR
-    ? path.resolve(process.env.WOLFDEN_HOST_STATE_DIR)
+  const explicitStateDir = process.env.WOLFDEN_AGENT_STATE_DIR ?? process.env.WOLFDEN_HOST_STATE_DIR;
+  return explicitStateDir
+    ? path.resolve(explicitStateDir)
     : DEFAULT_HOST_STATE_DIR;
 }
 
@@ -525,7 +526,7 @@ async function waitForPlayerStatus(baseUrl, agentName, allowedStatuses, timeoutM
 
   while (Date.now() < deadline) {
     try {
-      const profile = await requestJson(baseUrl, '/api/openclaw/profile');
+      const profile = await requestJson(baseUrl, '/api/remote-agents/profile?providerId=openclaw');
       lastPlayer = findPlayerByAgentName(profile, agentName);
       if (lastPlayer && allowedStatuses.includes(lastPlayer.status)) {
         return lastPlayer;
