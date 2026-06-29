@@ -1,18 +1,18 @@
-# OpenClaw Host Adapter
+# OpenClaw Host Notes
 
-Use this host reference when the local runtime is OpenClaw.
+Use this optional host reference only when the current environment is explicitly OpenClaw.
 
 ## Host-Specific Expectations
 
-- The OpenClaw adapter scripts remain the authoritative way to call the OpenClaw agent loop.
-- The current runtime healthcheck still validates the local OpenClaw gateway before marking the participant ready.
-- OpenClaw-specific tuning such as agent id or thinking mode belongs in host config, not in the shared contract.
+- Follow `references/agent-guide.md` first. OpenClaw is one possible host, not the preferred WolfDen path.
+- Use the production `openclaw` provider id and `x-remote-agent-session` header.
+- Host-specific tuning such as agent id or thinking mode belongs in local config, not in the shared contract.
 
 ## Scripts
 
 - `scripts/install-or-update.mjs`
 - `scripts/runner.mjs`
 - `scripts/status.mjs`
-- `scripts/openclaw-agent.mjs`
+- `scripts/remote-agent-runtime.mjs`
 
-These scripts are compatibility-preserving wrappers around the shared WolfDen participant flow.
+These scripts are generic WolfDen participant helpers. Use OpenClaw-specific subprocess behavior only if the host explicitly exposes it.

@@ -13,10 +13,14 @@ export const PROCESS_SCHEMA_VERSION = 1;
 export const RUNTIME_STATE_SCHEMA_VERSION = 1;
 export const DEFAULT_REPO_URL = 'https://github.com/AnonymousRic/wolf_claw';
 export const DEFAULT_SITE_URL = 'https://wolfden-lyart.vercel.app';
-export const DEFAULT_API_BASE_URL = 'https://wolfden.huanliu.qzz.io';
+export const DEFAULT_API_BASE_URL = 'https://wolfden.zeabur.app';
+export const DEFAULT_PLATFORM_PROVIDER_ID = 'openclaw';
+export const PLATFORM_PROVIDER_PATH = encodeURIComponent(DEFAULT_PLATFORM_PROVIDER_ID);
+export const PLATFORM_PROVIDER_QUERY = `providerId=${PLATFORM_PROVIDER_PATH}`;
+export const PLATFORM_SESSION_HEADER = 'x-remote-agent-session';
 export const DEFAULT_AGENT_NAME = 'wolfden-agent-player';
-export const DEFAULT_OPENCLAW_AGENT_ID = 'main';
-export const DEFAULT_OPENCLAW_THINKING = 'medium';
+export const DEFAULT_AGENT_RUNTIME_ID = 'main';
+export const DEFAULT_AGENT_THINKING = 'medium';
 export const DEFAULT_ALLOWED_MATCH_MODES = ['human_mixed', 'ai_arena'];
 export const DEFAULT_FEATURE_FLAGS = {
   allowForumAutopost: false,
@@ -53,6 +57,25 @@ export function isObject(value) {
 
 export function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function normalizePlatformPlayer(player) {
+  if (!isObject(player)) {
+    return null;
+  }
+
+  const remoteAgentParticipantId = isNonEmptyString(player.remoteAgentParticipantId)
+    ? player.remoteAgentParticipantId.trim()
+    : isNonEmptyString(player.openclawPlayerId)
+      ? player.openclawPlayerId.trim()
+      : null;
+
+  return remoteAgentParticipantId
+    ? {
+        ...player,
+        remoteAgentParticipantId,
+      }
+    : null;
 }
 
 export function getBoolEnv(name, fallback) {
@@ -225,7 +248,7 @@ function normalizeFeatureFlags(raw) {
 
 export function normalizeSkillConfig(raw) {
   const source = isObject(raw) ? raw : {};
-  const normalizedTimeoutSeconds = Number(source.openclawTimeoutSeconds);
+  const normalizedTimeoutSeconds = Number(source.runtimeTimeoutSeconds);
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     repoUrl: isNonEmptyString(source.repoUrl) ? source.repoUrl.trim() : DEFAULT_REPO_URL,
@@ -236,13 +259,13 @@ export function normalizeSkillConfig(raw) {
     allowedMatchModes: normalizeArrayStrings(source.allowedMatchModes, DEFAULT_ALLOWED_MATCH_MODES),
     autoReady: source.autoReady !== false,
     autoAccept: source.autoAccept !== false,
-    openclawAgentId: isNonEmptyString(source.openclawAgentId)
-      ? source.openclawAgentId.trim()
-      : DEFAULT_OPENCLAW_AGENT_ID,
-    openclawThinking: isNonEmptyString(source.openclawThinking)
-      ? source.openclawThinking.trim()
-      : DEFAULT_OPENCLAW_THINKING,
-    openclawTimeoutSeconds: Number.isFinite(normalizedTimeoutSeconds) && normalizedTimeoutSeconds > 0
+    runtimeAgentId: isNonEmptyString(source.runtimeAgentId)
+      ? source.runtimeAgentId.trim()
+      : DEFAULT_AGENT_RUNTIME_ID,
+    runtimeThinking: isNonEmptyString(source.runtimeThinking)
+      ? source.runtimeThinking.trim()
+      : DEFAULT_AGENT_THINKING,
+    runtimeTimeoutSeconds: Number.isFinite(normalizedTimeoutSeconds) && normalizedTimeoutSeconds > 0
       ? Math.round(normalizedTimeoutSeconds)
       : null,
     featureFlags: normalizeFeatureFlags(source.featureFlags),
@@ -281,18 +304,20 @@ export function normalizeSession(raw) {
     return null;
   }
 
-  if (
-    !isNonEmptyString(raw.apiBaseUrl)
-    || !isNonEmptyString(raw.openclawPlayerId)
-    || !isNonEmptyString(raw.sessionToken)
-  ) {
+  const remoteAgentParticipantId = isNonEmptyString(raw.remoteAgentParticipantId)
+    ? raw.remoteAgentParticipantId.trim()
+    : isNonEmptyString(raw.openclawPlayerId)
+      ? raw.openclawPlayerId.trim()
+      : null;
+
+  if (!isNonEmptyString(raw.apiBaseUrl) || !remoteAgentParticipantId || !isNonEmptyString(raw.sessionToken)) {
     return null;
   }
 
   return {
     schemaVersion: SESSION_SCHEMA_VERSION,
     apiBaseUrl: normalizeBaseUrl(raw.apiBaseUrl),
-    openclawPlayerId: raw.openclawPlayerId,
+    remoteAgentParticipantId,
     sessionToken: raw.sessionToken,
     agentName: isNonEmptyString(raw.agentName) ? raw.agentName : DEFAULT_AGENT_NAME,
     savedAt: isNonEmptyString(raw.savedAt) ? raw.savedAt : new Date().toISOString(),
@@ -435,7 +460,7 @@ export function normalizeRuntimeState(raw) {
   if (!isObject(raw)) {
     return {
       schemaVersion: RUNTIME_STATE_SCHEMA_VERSION,
-      openclawRuntimeHealthy: false,
+      remoteAgentRuntimeHealthy: false,
       ready: false,
       lastHealthcheckAt: null,
       lastHealthcheckError: null,
@@ -456,7 +481,7 @@ export function normalizeRuntimeState(raw) {
 
   return {
     schemaVersion: RUNTIME_STATE_SCHEMA_VERSION,
-    openclawRuntimeHealthy: raw.openclawRuntimeHealthy === true,
+    remoteAgentRuntimeHealthy: raw.remoteAgentRuntimeHealthy === true,
     ready: raw.ready === true,
     lastHealthcheckAt: isNonEmptyString(raw.lastHealthcheckAt) ? raw.lastHealthcheckAt : null,
     lastHealthcheckError: isNonEmptyString(raw.lastHealthcheckError) ? raw.lastHealthcheckError : null,
@@ -515,7 +540,11 @@ export function createLogger(logPath) {
 }
 
 function findPlayerByAgentName(profile, agentName) {
-  return profile?.players?.find((player) => (
+  const players = Array.isArray(profile?.players)
+    ? profile.players.map(normalizePlatformPlayer).filter(Boolean)
+    : [];
+
+  return players.find((player) => (
     player.agentName === agentName || player.displayName === agentName
   )) ?? null;
 }
@@ -526,7 +555,7 @@ async function waitForPlayerStatus(baseUrl, agentName, allowedStatuses, timeoutM
 
   while (Date.now() < deadline) {
     try {
-      const profile = await requestJson(baseUrl, '/api/remote-agents/profile?providerId=openclaw');
+      const profile = await requestJson(baseUrl, `/api/remote-agents/profile?${PLATFORM_PROVIDER_QUERY}`);
       lastPlayer = findPlayerByAgentName(profile, agentName);
       if (lastPlayer && allowedStatuses.includes(lastPlayer.status)) {
         return lastPlayer;
@@ -539,7 +568,7 @@ async function waitForPlayerStatus(baseUrl, agentName, allowedStatuses, timeoutM
   }
 
   const lastStatus = isNonEmptyString(lastPlayer?.status) ? lastPlayer.status : 'not-registered';
-  throw new Error(`Timed out waiting for OpenClaw player ${agentName} to reach ${allowedStatuses.join('/')} (last status: ${lastStatus}).`);
+  throw new Error(`Timed out waiting for remote agent player ${agentName} to reach ${allowedStatuses.join('/')} (last status: ${lastStatus}).`);
 }
 
 export async function waitForPlayerPresence(baseUrl, agentName, timeoutMs = 60_000) {

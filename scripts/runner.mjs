@@ -6,8 +6,9 @@ import {
   DEFAULT_ALLOWED_MATCH_MODES,
   DEFAULT_CAPABILITIES,
   DEFAULT_FEATURE_FLAGS,
-  DEFAULT_OPENCLAW_AGENT_ID,
-  DEFAULT_OPENCLAW_THINKING,
+  DEFAULT_AGENT_RUNTIME_ID,
+  DEFAULT_AGENT_THINKING,
+  DEFAULT_PLATFORM_PROVIDER_ID,
   DEFAULT_PLATFORM_HEARTBEAT_INTERVAL_MS,
   DEFAULT_PLATFORM_POLL_MS,
   DEFAULT_TURN_POLL_MS,
@@ -21,7 +22,11 @@ import {
   loadSession,
   loadSkillConfig,
   normalizeBaseUrl,
+  normalizePlatformPlayer,
   parseArgs,
+  PLATFORM_PROVIDER_PATH,
+  PLATFORM_PROVIDER_QUERY,
+  PLATFORM_SESSION_HEADER,
   requestJson,
   resolveRunnerPaths,
   saveRuntimeState,
@@ -29,10 +34,10 @@ import {
   sleep,
 } from './common.mjs';
 import {
-  buildMirrorPlanFromOpenclaw,
-  buildSeatActionFromOpenclaw,
-  checkOpenclawRuntimeHealth,
-} from './openclaw-agent.mjs';
+  buildMirrorPlanFromRemoteAgent,
+  buildSeatActionFromRemoteAgent,
+  checkRemoteAgentRuntimeHealth,
+} from './remote-agent-runtime.mjs';
 
 async function readTextResource(relativePath) {
   const resourceUrl = new URL(relativePath, import.meta.url);
@@ -113,8 +118,8 @@ async function getRoom(apiBaseUrl, roomId) {
   return requestJson(apiBaseUrl, `/api/rooms/${roomId}`);
 }
 
-async function updatePlatformPreferences(apiBaseUrl, openclawPlayerId, preferences) {
-  return requestJson(apiBaseUrl, `/api/remote-agents/participants/${openclawPlayerId}/preferences?providerId=openclaw`, {
+async function updatePlatformPreferences(apiBaseUrl, remoteAgentParticipantId, preferences) {
+  return requestJson(apiBaseUrl, `/api/remote-agents/participants/${remoteAgentParticipantId}/preferences?${PLATFORM_PROVIDER_QUERY}`, {
     method: 'PATCH',
     body: preferences,
   });
@@ -122,16 +127,16 @@ async function updatePlatformPreferences(apiBaseUrl, openclawPlayerId, preferenc
 
 async function getCapabilities(apiBaseUrl) {
   try {
-    return await requestJson(apiBaseUrl, '/api/remote-agents/capabilities?providerId=openclaw');
+    return await requestJson(apiBaseUrl, `/api/remote-agents/capabilities?${PLATFORM_PROVIDER_QUERY}`);
   } catch {
     return { ...DEFAULT_CAPABILITIES };
   }
 }
 
-function buildMatchSocketUrl(apiBaseUrl) {
+function buildA2ASocketUrl(apiBaseUrl) {
   const url = new URL(normalizeBaseUrl(apiBaseUrl));
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  url.pathname = '/ws';
+  url.pathname = '/ws/a2a';
   url.search = '';
   url.hash = '';
   return url.toString();
@@ -142,7 +147,7 @@ function isDecisionCheckpointStatus(status) {
 }
 
 export function extractActionableCheckpointFromRoom(room) {
-  const sync = room?.openclawSync;
+  const sync = room?.remoteAgentSync;
   if (!sync || sync.requiresDecision !== true || !sync.checkpointId || !sync.fingerprint || !sync.matchId) {
     return null;
   }
@@ -158,7 +163,7 @@ export function extractActionableCheckpointFromRoom(room) {
 }
 
 export function extractActionableCheckpointFromSnapshot(snapshot) {
-  const telemetry = snapshot?.openclawTelemetry;
+  const telemetry = snapshot?.remoteAgentTelemetry;
   if (!telemetry?.currentCheckpointId || !telemetry?.currentFingerprint) {
     return null;
   }
@@ -174,7 +179,16 @@ export function extractActionableCheckpointFromSnapshot(snapshot) {
   };
 }
 
-function createMatchSnapshotSubscription({ apiBaseUrl, matchId, logger, onCheckpoint }) {
+function createA2ASessionSubscription({
+  apiBaseUrl,
+  sessionToken,
+  participantId,
+  logger,
+  onInvitation,
+  onInvitationCancelled,
+  onTaskOpen,
+  onTaskCancel,
+}) {
   if (typeof WebSocket !== 'function') {
     return {
       close() {},
@@ -184,6 +198,15 @@ function createMatchSnapshotSubscription({ apiBaseUrl, matchId, logger, onCheckp
   let socket = null;
   let reconnectTimer = null;
   let closed = false;
+  let resumeToken = null;
+
+  const send = (payload) => {
+    try {
+      socket?.send(JSON.stringify(payload));
+    } catch {
+      // Reconnect handling is owned by the websocket close/error handlers.
+    }
+  };
 
   const connect = () => {
     if (closed) {
@@ -191,10 +214,9 @@ function createMatchSnapshotSubscription({ apiBaseUrl, matchId, logger, onCheckp
     }
 
     try {
-      socket = new WebSocket(buildMatchSocketUrl(apiBaseUrl));
+      socket = new WebSocket(buildA2ASocketUrl(apiBaseUrl));
     } catch (error) {
-      void logger.warn('Failed to open WolfDen websocket subscription.', {
-        matchId,
+      void logger.warn('Failed to open WolfDen A2A websocket subscription.', {
         message: error instanceof Error ? error.message : String(error),
       });
       reconnectTimer = setTimeout(connect, 1000);
@@ -202,27 +224,71 @@ function createMatchSnapshotSubscription({ apiBaseUrl, matchId, logger, onCheckp
     }
 
     socket.addEventListener('open', () => {
-      socket?.send(JSON.stringify({
-        type: 'subscribe',
-        matchId,
-      }));
+      send(resumeToken
+        ? {
+            type: 'session.resume',
+            resumeToken,
+          }
+        : {
+            type: 'session.connect',
+            providerId: DEFAULT_PLATFORM_PROVIDER_ID,
+            sessionToken,
+            participantId,
+          });
     });
 
     socket.addEventListener('message', (event) => {
-      try {
-        const envelope = JSON.parse(String(event.data ?? ''));
-        if (envelope?.type === 'match.snapshot' && envelope.snapshot?.matchId === matchId) {
-          onCheckpoint(extractActionableCheckpointFromSnapshot(envelope.snapshot));
+      void (async () => {
+        let seq = null;
+        try {
+          const message = JSON.parse(String(event.data ?? ''));
+          seq = Number.isInteger(message?.seq) ? message.seq : null;
+          switch (message?.type) {
+            case 'session.welcome':
+              resumeToken = typeof message.resumeToken === 'string' ? message.resumeToken : resumeToken;
+              await logger.info('WolfDen A2A session connected.', {
+                participantId: message.participantId ?? participantId,
+              });
+              break;
+            case 'invite.pending':
+              onInvitation?.(message.invitation);
+              break;
+            case 'invite.cancelled':
+              onInvitationCancelled?.(message.inviteId);
+              break;
+            case 'task.open':
+              onTaskOpen?.(message.task);
+              break;
+            case 'task.cancel':
+              onTaskCancel?.(message);
+              break;
+            case 'node.state':
+            case 'task.status':
+            case 'session.resync':
+              break;
+            case 'error':
+              await logger.warn('WolfDen A2A websocket returned an error.', {
+                message: typeof message.message === 'string' ? message.message : 'unknown',
+              });
+              break;
+            default:
+              await logger.warn('Ignoring unknown WolfDen A2A websocket payload.', {
+                type: message?.type ?? null,
+              });
+          }
+        } catch (error) {
+          await logger.warn('Failed to parse WolfDen A2A websocket payload.', {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          if (seq !== null) {
+            send({
+              type: 'ack',
+              seq,
+            });
+          }
         }
-        if (envelope?.type === 'match.finished' && envelope.snapshot?.matchId === matchId) {
-          onCheckpoint(null);
-        }
-      } catch (error) {
-        void logger.warn('Failed to parse WolfDen websocket payload.', {
-          matchId,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
+      })();
     });
 
     socket.addEventListener('close', () => {
@@ -259,21 +325,21 @@ function createMatchSnapshotSubscription({ apiBaseUrl, matchId, logger, onCheckp
 }
 
 async function getMirrorPlanRequest(apiBaseUrl, matchId, sessionToken) {
-  return requestJson(apiBaseUrl, `/api/remote-agents/matches/${matchId}/task-request?providerId=openclaw`, {
-    headers: { 'x-remote-agent-session': sessionToken },
+  return requestJson(apiBaseUrl, `/api/remote-agents/matches/${matchId}/task-request?${PLATFORM_PROVIDER_QUERY}`, {
+    headers: { [PLATFORM_SESSION_HEADER]: sessionToken },
   });
 }
 
 async function submitMirrorPlan(apiBaseUrl, matchId, sessionToken, payload) {
-  return requestJson(apiBaseUrl, `/api/remote-agents/matches/${matchId}/task-result?providerId=openclaw`, {
+  return requestJson(apiBaseUrl, `/api/remote-agents/matches/${matchId}/task-result?${PLATFORM_PROVIDER_QUERY}`, {
     method: 'POST',
-    headers: { 'x-remote-agent-session': sessionToken },
+    headers: { [PLATFORM_SESSION_HEADER]: sessionToken },
     body: payload,
   });
 }
 
 async function heartbeatPlatformSession(apiBaseUrl, sessionToken, ready) {
-  return requestJson(apiBaseUrl, '/api/remote-agents/providers/openclaw/heartbeat', {
+  return requestJson(apiBaseUrl, `/api/remote-agents/providers/${PLATFORM_PROVIDER_PATH}/heartbeat`, {
     method: 'POST',
     body: {
       sessionToken,
@@ -310,19 +376,23 @@ async function restorePersistedPlatformSession(config, paths, logger, ready = fa
 
   try {
     const heartbeat = await heartbeatPlatformSession(config.apiBaseUrl, persistedSession.sessionToken, ready);
+    const player = normalizePlatformPlayer(heartbeat.player);
+    if (!player) {
+      throw new Error('WolfDen platform heartbeat returned a player without a participant id.');
+    }
 
     await saveSession(paths.sessionPath, {
       apiBaseUrl: config.apiBaseUrl,
-      openclawPlayerId: heartbeat.player.openclawPlayerId,
+      remoteAgentParticipantId: player.remoteAgentParticipantId,
       sessionToken: persistedSession.sessionToken,
-      agentName: heartbeat.player.agentName ?? persistedSession.agentName ?? config.agentName,
+      agentName: player.agentName ?? persistedSession.agentName ?? config.agentName,
     });
 
     return {
       restored: true,
       sessionToken: persistedSession.sessionToken,
       heartbeatIntervalMs: DEFAULT_PLATFORM_HEARTBEAT_INTERVAL_MS,
-      player: heartbeat.player,
+      player,
       invitations: heartbeat.invitations,
     };
   } catch (error) {
@@ -338,11 +408,11 @@ async function restorePersistedPlatformSession(config, paths, logger, ready = fa
 async function registerPlatformSession(config, paths, logger, ready = false) {
   if (!config.bindCode) {
     throw new Error(
-      'No saved WolfDen session was found. Use a fresh bind code only when this OpenClaw installation has not been bound before or was intentionally released.',
+      'No saved WolfDen session was found. Use a fresh bind code only when this remote agent installation has not been bound before or was intentionally released.',
     );
   }
 
-  const registration = await requestJson(config.apiBaseUrl, '/api/remote-agents/providers/openclaw/register', {
+  const registration = await requestJson(config.apiBaseUrl, `/api/remote-agents/providers/${PLATFORM_PROVIDER_PATH}/register`, {
     method: 'POST',
     body: {
       bindCode: config.bindCode,
@@ -351,20 +421,25 @@ async function registerPlatformSession(config, paths, logger, ready = false) {
       autoReady: ready,
     },
   });
+  const player = normalizePlatformPlayer(registration.player);
+  if (!player) {
+    throw new Error('WolfDen platform registration returned a player without a participant id.');
+  }
 
   await saveSession(paths.sessionPath, {
     apiBaseUrl: config.apiBaseUrl,
-    openclawPlayerId: registration.player.openclawPlayerId,
+    remoteAgentParticipantId: player.remoteAgentParticipantId,
     sessionToken: registration.sessionToken,
-    agentName: registration.player.agentName ?? config.agentName,
+    agentName: player.agentName ?? config.agentName,
   });
   await clearBindCodeFromConfig(paths.configPath);
   await logger.info('Registered WolfDen platform session and cleared the one-time bind code from host config.', {
-    openclawPlayerId: registration.player.openclawPlayerId,
+    remoteAgentParticipantId: player.remoteAgentParticipantId,
   });
 
   return {
     ...registration,
+    player,
     restored: false,
   };
 }
@@ -408,7 +483,7 @@ async function maybeRunDeferredLearningHooks({
 export async function refreshMirrorAsyncPlan({
   config,
   sessionToken,
-  openclawPlayerId,
+  remoteAgentParticipantId,
   matchId,
   referenceBundle,
   planCache,
@@ -418,7 +493,7 @@ export async function refreshMirrorAsyncPlan({
   updateRuntimeState,
   deps = {
     getMirrorPlanRequest,
-    buildMirrorPlanFromOpenclaw,
+    buildMirrorPlanFromRemoteAgent,
     submitMirrorPlan,
   },
 }) {
@@ -455,9 +530,9 @@ export async function refreshMirrorAsyncPlan({
   inFlightPlans.add(inFlightKey);
   let remotePlan = null;
   try {
-    remotePlan = await deps.buildMirrorPlanFromOpenclaw({
+    remotePlan = await deps.buildMirrorPlanFromRemoteAgent({
       config,
-      openclawPlayerId,
+      remoteAgentParticipantId,
       planRequest,
       referenceBundle,
     });
@@ -469,7 +544,7 @@ export async function refreshMirrorAsyncPlan({
         || latestCheckpoint.fingerprint !== checkpointRef.fingerprint
       )
     ) {
-      await logger.info('Discarded stale OpenClaw mirror_async plan before submit.', {
+      await logger.info('Discarded stale remote agent mirror_async plan before submit.', {
         matchId,
         phase: planRequest.phase,
         discardedCheckpointId: checkpointRef.checkpointId,
@@ -481,11 +556,11 @@ export async function refreshMirrorAsyncPlan({
     const submitted = await deps.submitMirrorPlan(config.apiBaseUrl, matchId, sessionToken, remotePlan.payload);
     planCache.set(cacheKey, submitted.fingerprint);
     await updateRuntimeState({
-      openclawRuntimeHealthy: true,
+      remoteAgentRuntimeHealthy: true,
       ready: config.autoReady,
       lastRunAt: new Date().toISOString(),
       lastRunLatencyMs: remotePlan.latencyMs,
-      lastPlanSource: 'remote-openclaw',
+      lastPlanSource: 'remote-agent',
       lastFailureReason: null,
       lastMatchId: matchId,
       lastPhase: planRequest.phase,
@@ -496,13 +571,13 @@ export async function refreshMirrorAsyncPlan({
       lastPromptChars: remotePlan.promptChars ?? null,
       lastTimeoutSeconds: remotePlan.timeoutSeconds ?? null,
     }, true);
-    await logger.info('Submitted remote OpenClaw mirror_async plan.', {
+    await logger.info('Submitted remote remote agent mirror_async plan.', {
       matchId,
       playerId: planRequest.playerId,
       phase: planRequest.phase,
       requestId: remotePlan.requestId ?? planRequest.requestId,
       fingerprint: submitted.fingerprint,
-      openclawLatencyMs: remotePlan.latencyMs,
+      remoteAgentLatencyMs: remotePlan.latencyMs,
       promptChars: remotePlan.promptChars ?? null,
       timeoutSeconds: remotePlan.timeoutSeconds ?? null,
     });
@@ -510,7 +585,7 @@ export async function refreshMirrorAsyncPlan({
     planCache.delete(cacheKey);
     const message = error instanceof Error ? error.message : String(error);
     if (error instanceof HttpError && error.statusCode === 409) {
-      await logger.info('OpenClaw mirror_async plan was superseded before submission.', {
+      await logger.info('remote agent mirror_async plan was superseded before submission.', {
         matchId,
         phase: planRequest.phase,
         message,
@@ -520,7 +595,7 @@ export async function refreshMirrorAsyncPlan({
     const lastPlanSource = message.includes('timed out') ? 'timeout' : 'invalid-remote-response';
     const runtimeHealthy = !isRuntimeTransportFailure(error) && lastPlanSource !== 'timeout';
     await updateRuntimeState({
-      openclawRuntimeHealthy: runtimeHealthy,
+      remoteAgentRuntimeHealthy: runtimeHealthy,
       ready: runtimeHealthy && config.autoReady,
       lastRunAt: new Date().toISOString(),
       lastRunLatencyMs: Date.now() - startedAt,
@@ -535,7 +610,7 @@ export async function refreshMirrorAsyncPlan({
       lastPromptChars: remotePlan?.promptChars ?? null,
       lastTimeoutSeconds: remotePlan?.timeoutSeconds ?? null,
     }, true);
-    await logger.warn('OpenClaw mirror_async planning failed. The server may fall back locally.', {
+    await logger.warn('remote agent mirror_async planning failed. The server may fall back locally.', {
       matchId,
       phase: planRequest.phase,
       requestId: remotePlan?.requestId ?? planRequest.requestId,
@@ -559,10 +634,11 @@ async function playAcceptedInvitation(
   referenceBundle,
   capabilities,
   sessionToken,
-  openclawPlayerId,
+  remoteAgentParticipantId,
   logger,
   updateRuntimeState,
   executionMode = 'remote_blocking',
+  a2aState = null,
 ) {
   const seatId = invitation.seatId;
   const planCache = new Map();
@@ -597,11 +673,10 @@ async function playAcceptedInvitation(
 
     if (executionMode === 'mirror_async') {
       let activeMatchId = null;
-      let matchSubscription = null;
       const requestMirrorPlan = async (matchId) => refreshMirrorAsyncPlan({
         config,
         sessionToken,
-        openclawPlayerId,
+        remoteAgentParticipantId,
         matchId,
         referenceBundle,
         planCache,
@@ -610,30 +685,14 @@ async function playAcceptedInvitation(
         logger,
         updateRuntimeState,
       });
-      const handleCheckpoint = (checkpoint) => {
-        if (!checkpoint) {
-          if (activeMatchId) {
-            latestCheckpoints.delete(activeMatchId);
-          }
-          return;
-        }
-        if (checkpoint.matchId !== activeMatchId) {
-          return;
-        }
-        latestCheckpoints.set(checkpoint.matchId, checkpoint);
-        void requestMirrorPlan(checkpoint.matchId).catch(async (error) => {
-          await logger.warn('OpenClaw mirror_async checkpoint refresh failed.', {
-            matchId: checkpoint.matchId,
-            phase: checkpoint.phase,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        });
-      };
 
       while (true) {
         const room = await getRoom(config.apiBaseUrl, invitation.roomId);
         if (room.status === 'finished') {
-          matchSubscription?.close();
+          if (room.matchId) {
+            a2aState?.tasks?.delete(room.matchId);
+            latestCheckpoints.delete(room.matchId);
+          }
           await logger.info('mirror_async room finished.', {
             roomId: invitation.roomId,
             matchId: room.matchId ?? null,
@@ -648,21 +707,23 @@ async function playAcceptedInvitation(
         }
 
         if (room.matchId && room.matchId !== activeMatchId) {
-          matchSubscription?.close();
           activeMatchId = room.matchId;
-          matchSubscription = createMatchSnapshotSubscription({
-            apiBaseUrl: config.apiBaseUrl,
-            matchId: room.matchId,
-            logger,
-            onCheckpoint: handleCheckpoint,
-          });
         }
 
         let pollMs = config.platformPollMs;
-        const roomCheckpoint = extractActionableCheckpointFromRoom(room);
-        if (room.matchId && roomCheckpoint) {
-          latestCheckpoints.set(room.matchId, roomCheckpoint);
+        const pushedTask = room.matchId ? a2aState?.tasks?.get(room.matchId) : null;
+        if (room.matchId && pushedTask) {
+          latestCheckpoints.set(room.matchId, {
+            checkpointId: pushedTask.requestId,
+            fingerprint: pushedTask.fingerprint,
+          });
           pollMs = await requestMirrorPlan(room.matchId);
+        } else {
+          const roomCheckpoint = extractActionableCheckpointFromRoom(room);
+          if (room.matchId && roomCheckpoint) {
+            latestCheckpoints.set(room.matchId, roomCheckpoint);
+            pollMs = await requestMirrorPlan(room.matchId);
+          }
         }
 
         await sleep(room.matchId ? pollMs : config.platformPollMs);
@@ -687,9 +748,9 @@ async function playAcceptedInvitation(
       }
 
       try {
-        const remoteAction = await buildSeatActionFromOpenclaw({
+        const remoteAction = await buildSeatActionFromRemoteAgent({
           config,
-          openclawPlayerId,
+          remoteAgentParticipantId,
           turn,
           referenceBundle,
         });
@@ -699,11 +760,11 @@ async function playAcceptedInvitation(
           ...remoteAction.action,
         });
         await updateRuntimeState({
-          openclawRuntimeHealthy: true,
+          remoteAgentRuntimeHealthy: true,
           ready: config.autoReady,
           lastRunAt: new Date().toISOString(),
           lastRunLatencyMs: remoteAction.latencyMs,
-          lastPlanSource: 'remote-openclaw',
+          lastPlanSource: 'remote-agent',
           lastFailureReason: null,
           lastMatchId: turn.matchId,
           lastPhase: turn.phase,
@@ -713,7 +774,7 @@ async function playAcceptedInvitation(
         const message = error instanceof Error ? error.message : String(error);
         const runtimeHealthy = !isRuntimeTransportFailure(error) && !message.includes('timed out');
         await updateRuntimeState({
-          openclawRuntimeHealthy: runtimeHealthy,
+          remoteAgentRuntimeHealthy: runtimeHealthy,
           ready: runtimeHealthy && config.autoReady,
           lastRunAt: new Date().toISOString(),
           lastRunLatencyMs: null,
@@ -723,7 +784,7 @@ async function playAcceptedInvitation(
           lastPhase: turn.phase,
           lastActionType: null,
         }, true);
-        await logger.warn('remote_blocking OpenClaw action failed; retrying the same turn window.', {
+        await logger.warn('remote_blocking remote agent action failed; retrying the same turn window.', {
           matchId: turn.matchId,
           phase: turn.phase,
           message,
@@ -746,13 +807,13 @@ export async function main() {
   const loadedConfig = await loadSkillConfig(paths.configPath);
   const config = loadedConfig ? {
     ...loadedConfig,
-    ...(process.env.OPENCLAW_PLATFORM_API_BASE_URL ? { apiBaseUrl: process.env.OPENCLAW_PLATFORM_API_BASE_URL } : {}),
+    ...(process.env.WOLFDEN_AGENT_PLATFORM_API_BASE_URL ? { apiBaseUrl: process.env.WOLFDEN_AGENT_PLATFORM_API_BASE_URL } : {}),
     ...(process.env.WOLFDEN_API_BASE_URL ? { apiBaseUrl: process.env.WOLFDEN_API_BASE_URL } : {}),
-    ...(process.env.OPENCLAW_PLATFORM_SITE_URL ? { siteUrl: process.env.OPENCLAW_PLATFORM_SITE_URL } : {}),
+    ...(process.env.WOLFDEN_AGENT_PLATFORM_SITE_URL ? { siteUrl: process.env.WOLFDEN_AGENT_PLATFORM_SITE_URL } : {}),
     ...(process.env.WOLFDEN_AGENT_NAME ? { agentName: process.env.WOLFDEN_AGENT_NAME } : {}),
-    ...(process.env.WOLFDEN_OPENCLAW_AGENT_ID ? { openclawAgentId: process.env.WOLFDEN_OPENCLAW_AGENT_ID } : {}),
-    ...(process.env.WOLFDEN_OPENCLAW_THINKING ? { openclawThinking: process.env.WOLFDEN_OPENCLAW_THINKING } : {}),
-    ...(process.env.WOLFDEN_OPENCLAW_TIMEOUT_SECONDS ? { openclawTimeoutSeconds: Number(process.env.WOLFDEN_OPENCLAW_TIMEOUT_SECONDS) } : {}),
+    ...(process.env.WOLFDEN_AGENT_RUNTIME_ID ? { runtimeAgentId: process.env.WOLFDEN_AGENT_RUNTIME_ID } : {}),
+    ...(process.env.WOLFDEN_AGENT_THINKING ? { runtimeThinking: process.env.WOLFDEN_AGENT_THINKING } : {}),
+    ...(process.env.WOLFDEN_AGENT_TIMEOUT_SECONDS ? { runtimeTimeoutSeconds: Number(process.env.WOLFDEN_AGENT_TIMEOUT_SECONDS) } : {}),
   } : null;
 
   if (!config) {
@@ -770,26 +831,30 @@ export async function main() {
   }
   config.apiBaseUrl = normalizeBaseUrl(config.apiBaseUrl);
   config.agentName = config.agentName || DEFAULT_AGENT_NAME;
-  config.openclawAgentId = config.openclawAgentId || DEFAULT_OPENCLAW_AGENT_ID;
-  config.openclawThinking = config.openclawThinking || DEFAULT_OPENCLAW_THINKING;
+  config.runtimeAgentId = config.runtimeAgentId || DEFAULT_AGENT_RUNTIME_ID;
+  config.runtimeThinking = config.runtimeThinking || DEFAULT_AGENT_THINKING;
 
   const runtimeStateRef = {
     current: await saveRuntimeState(paths.runtimeStatePath, await loadRuntimeState(paths.runtimeStatePath)),
   };
 
-  await logger.info('Loaded WolfDen platform-player runner config.', {
+  await logger.info('Loaded WolfDen agent-player runner config.', {
     configPath: paths.configPath,
     apiBaseUrl: config.apiBaseUrl,
     repoUrl: config.repoUrl,
     siteUrl: config.siteUrl,
     allowedMatchModes: config.allowedMatchModes,
-    openclawAgentId: config.openclawAgentId,
-    openclawThinking: config.openclawThinking,
+    runtimeAgentId: config.runtimeAgentId,
+    runtimeThinking: config.runtimeThinking,
   });
 
   const session = await restorePersistedPlatformSession(config, paths, logger, false)
     ?? await registerPlatformSession(config, paths, logger, false);
   const capabilities = await getCapabilities(config.apiBaseUrl);
+  const a2aState = {
+    invitations: new Map(),
+    tasks: new Map(),
+  };
 
   async function updateRuntimeState(patch, syncReady = false) {
     runtimeStateRef.current = await saveRuntimeState(paths.runtimeStatePath, {
@@ -807,9 +872,9 @@ export async function main() {
   }
 
   async function refreshRuntimeHealth() {
-    const health = await checkOpenclawRuntimeHealth(config);
+    const health = await checkRemoteAgentRuntimeHealth(config);
     await updateRuntimeState({
-      openclawRuntimeHealthy: health.healthy,
+      remoteAgentRuntimeHealthy: health.healthy,
       ready: health.healthy && config.autoReady,
       lastHealthcheckAt: new Date().toISOString(),
       lastHealthcheckError: health.healthy ? null : health.detail,
@@ -818,11 +883,11 @@ export async function main() {
     }, true);
 
     if (!health.healthy) {
-      await logger.warn('OpenClaw runtime healthcheck failed; the player will stay unready.', {
+      await logger.warn('remote agent runtime healthcheck failed; the player will stay unready.', {
         detail: health.detail,
       });
     } else {
-      await logger.info('OpenClaw runtime healthcheck succeeded.', {
+      await logger.info('remote agent runtime healthcheck succeeded.', {
         latencyMs: health.latencyMs,
       });
     }
@@ -832,16 +897,43 @@ export async function main() {
 
   await updatePlatformPreferences(
     config.apiBaseUrl,
-    session.player.openclawPlayerId,
+    session.player.remoteAgentParticipantId,
     buildPlatformPreferences(session.player.preferences, config),
   );
-  await logger.info('Updated WolfDen platform preferences for the bound OpenClaw player.', {
-    openclawPlayerId: session.player.openclawPlayerId,
+  await logger.info('Updated WolfDen platform preferences for the bound remote agent player.', {
+    remoteAgentParticipantId: session.player.remoteAgentParticipantId,
     allowedMatchModes: config.allowedMatchModes,
     capabilities,
   });
 
   await refreshRuntimeHealth();
+
+  createA2ASessionSubscription({
+    apiBaseUrl: config.apiBaseUrl,
+    sessionToken: session.sessionToken,
+    participantId: session.player.remoteAgentParticipantId,
+    logger,
+    onInvitation(invitation) {
+      if (invitation?.status === 'pending' && invitation.inviteId) {
+        a2aState.invitations.set(invitation.inviteId, invitation);
+      }
+    },
+    onInvitationCancelled(inviteId) {
+      if (inviteId) {
+        a2aState.invitations.delete(inviteId);
+      }
+    },
+    onTaskOpen(task) {
+      if (task?.matchId) {
+        a2aState.tasks.set(task.matchId, task);
+      }
+    },
+    onTaskCancel(message) {
+      if (message?.matchId) {
+        a2aState.tasks.delete(message.matchId);
+      }
+    },
+  });
 
   let sessionExpired = false;
   let currentInvitationId = null;
@@ -879,7 +971,7 @@ export async function main() {
     }
 
     if (
-      !runtimeStateRef.current.openclawRuntimeHealthy
+      !runtimeStateRef.current.remoteAgentRuntimeHealthy
       && Date.now() - lastHealthcheckAttemptAt >= 10_000
     ) {
       lastHealthcheckAttemptAt = Date.now();
@@ -888,8 +980,8 @@ export async function main() {
 
     let invitations;
     try {
-      invitations = await requestJson(config.apiBaseUrl, '/api/remote-agents/providers/openclaw/invitations', {
-        headers: { 'x-remote-agent-session': session.sessionToken },
+      invitations = await requestJson(config.apiBaseUrl, `/api/remote-agents/providers/${PLATFORM_PROVIDER_PATH}/invitations`, {
+        headers: { [PLATFORM_SESSION_HEADER]: session.sessionToken },
       });
     } catch (error) {
       if (error instanceof HttpError && error.statusCode === 401) {
@@ -899,7 +991,9 @@ export async function main() {
       throw error;
     }
 
-    const pendingInvitation = invitations.find((item) => item.status === 'pending');
+    const pendingInvitation = invitations.find((item) => item.status === 'pending')
+      ?? [...a2aState.invitations.values()].find((item) => item.status === 'pending')
+      ?? null;
     if (!pendingInvitation || currentInvitationId) {
       await sleep(config.platformPollMs);
       continue;
@@ -922,7 +1016,7 @@ export async function main() {
     try {
       const resolved = await requestJson(
         config.apiBaseUrl,
-        `/api/remote-agents/invitations/${pendingInvitation.inviteId}/respond?providerId=openclaw`,
+        `/api/remote-agents/invitations/${pendingInvitation.inviteId}/respond?${PLATFORM_PROVIDER_QUERY}`,
         {
           method: 'POST',
           body: {
@@ -941,13 +1035,15 @@ export async function main() {
           referenceBundle,
           capabilities,
           session.sessionToken,
-          session.player.openclawPlayerId,
+          session.player.remoteAgentParticipantId,
           logger,
           updateRuntimeState,
           resolved.executionMode ?? 'remote_blocking',
+          a2aState,
         );
       }
     } finally {
+      a2aState.invitations.delete(pendingInvitation.inviteId);
       currentInvitationId = null;
     }
 

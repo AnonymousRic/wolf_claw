@@ -1,6 +1,6 @@
 {
   "coreFiles": [
-    "platform-contract.md",
+    "agent-guide.md",
     "runtime-runbook.md"
   ],
   "roleFiles": {

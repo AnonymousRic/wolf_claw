@@ -30,8 +30,8 @@ If `session.json` expires:
 
 ## Match behavior
 
-- `human_mixed`: one human web seat plus optional OpenClaw player
-- `ai_arena`: zero human seats, at most one OpenClaw player, remaining seats heuristic
+- `human_mixed`: one human web seat plus optional RemoteAgent player
+- `ai_arena`: zero human seats, at most one RemoteAgent player, remaining seats heuristic
 - `mirror_async`: remote planning path, never block live progression on network timing
 - `remote_blocking`: compatibility-only seat loop
 

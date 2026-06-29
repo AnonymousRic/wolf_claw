@@ -1,14 +1,14 @@
 import { spawn } from 'node:child_process';
 import process from 'node:process';
 import {
-  DEFAULT_OPENCLAW_AGENT_ID,
-  DEFAULT_OPENCLAW_THINKING,
+  DEFAULT_AGENT_RUNTIME_ID,
+  DEFAULT_AGENT_THINKING,
 } from './common.mjs';
 
-const OPENCLAW_MAX_SPEECH_SEGMENT_CHARS = 200;
-const OPENCLAW_MAX_SPEECH_SEGMENTS = 3;
-const OPENCLAW_MAX_SPEECH_CHARS = 602;
-const OPENCLAW_MAX_PLATFORM_TIMEOUT_MS = 30_000;
+const REMOTE_AGENT_MAX_SPEECH_SEGMENT_CHARS = 200;
+const REMOTE_AGENT_MAX_SPEECH_SEGMENTS = 3;
+const REMOTE_AGENT_MAX_SPEECH_CHARS = 602;
+const REMOTE_AGENT_MAX_PLATFORM_TIMEOUT_MS = 30_000;
 const SPEECH_PHASES = new Set(['sheriff_speech', 'day_speech', 'day_pk_speech', 'last_words']);
 const COMPACT_DECISION_PHASES = new Set(['day_vote', 'day_pk_vote', 'sheriff_vote', 'sheriff_direction', 'sheriff_transfer']);
 const SPEECH_PROMPT_LIMITS = {
@@ -55,7 +55,7 @@ const LEGACY_SPEECH_HISTORY_LIMITS = {
 };
 const compatRejectedParamKeys = new Set();
 
-export function __resetOpenclawCompatCacheForTests() {
+export function __resetRemoteAgentCompatCacheForTests() {
   compatRejectedParamKeys.clear();
 }
 
@@ -70,15 +70,15 @@ function normalizePositiveInteger(value, fallback) {
 function resolveSpeechBudget(legalAction, responseSchema = null) {
   const schemaMaxSegments = normalizePositiveInteger(
     responseSchema?.maxSpeechSegments,
-    OPENCLAW_MAX_SPEECH_SEGMENTS,
+    REMOTE_AGENT_MAX_SPEECH_SEGMENTS,
   );
   const schemaMaxSegmentChars = normalizePositiveInteger(
     responseSchema?.maxSpeechSegmentChars,
-    OPENCLAW_MAX_SPEECH_SEGMENT_CHARS,
+    REMOTE_AGENT_MAX_SPEECH_SEGMENT_CHARS,
   );
   const schemaMaxSpeechChars = normalizePositiveInteger(
     responseSchema?.maxSpeechChars,
-    OPENCLAW_MAX_SPEECH_CHARS,
+    REMOTE_AGENT_MAX_SPEECH_CHARS,
   );
   const legalMaxSpeechChars = normalizePositiveInteger(
     legalAction?.maxTextLength,
@@ -86,9 +86,9 @@ function resolveSpeechBudget(legalAction, responseSchema = null) {
   );
 
   return {
-    maxSpeechSegments: Math.min(OPENCLAW_MAX_SPEECH_SEGMENTS, schemaMaxSegments),
-    maxSpeechSegmentChars: Math.min(OPENCLAW_MAX_SPEECH_SEGMENT_CHARS, schemaMaxSegmentChars),
-    maxSpeechChars: Math.min(OPENCLAW_MAX_SPEECH_CHARS, schemaMaxSpeechChars, legalMaxSpeechChars),
+    maxSpeechSegments: Math.min(REMOTE_AGENT_MAX_SPEECH_SEGMENTS, schemaMaxSegments),
+    maxSpeechSegmentChars: Math.min(REMOTE_AGENT_MAX_SPEECH_SEGMENT_CHARS, schemaMaxSegmentChars),
+    maxSpeechChars: Math.min(REMOTE_AGENT_MAX_SPEECH_CHARS, schemaMaxSpeechChars, legalMaxSpeechChars),
   };
 }
 
@@ -241,7 +241,7 @@ function buildSpeechPromptRules(payload) {
 
 function buildSharedPromptBody({ payload, role, phase }) {
   return [
-    'You are operating exactly one WolfDen player seat through OpenClaw.',
+    'You are operating exactly one WolfDen player seat through remote agent.',
     'Return exactly one JSON object and nothing else.',
     'Never output markdown, code fences, or explanatory prose outside the JSON object.',
     'Only choose an actionType that exists in legalActions.',
@@ -367,10 +367,13 @@ function parseExtraArgs(raw) {
     .filter(Boolean);
 }
 
-function resolveOpenclawCommand() {
+function resolveRemoteAgentCommand() {
+  if (!process.env.WOLFDEN_AGENT_BIN) {
+    throw new Error('No local agent runtime command configured. Set WOLFDEN_AGENT_BIN for this host or use the host native tools described in the WolfDen Agent Guide.');
+  }
   return {
-    bin: process.env.WOLFDEN_OPENCLAW_BIN || 'openclaw',
-    extraArgs: parseExtraArgs(process.env.WOLFDEN_OPENCLAW_BIN_ARGS),
+    bin: process.env.WOLFDEN_AGENT_BIN,
+    extraArgs: parseExtraArgs(process.env.WOLFDEN_AGENT_BIN_ARGS),
   };
 }
 
@@ -378,28 +381,28 @@ function resolveLocalTimeoutSeconds(config, deadlineMs, fallbackMs = 12_000) {
   if (Number.isFinite(deadlineMs) && deadlineMs > 0) {
     const boundedPlatformBudgetMs = Math.max(
       2_000,
-      Math.min(deadlineMs - 1_000, OPENCLAW_MAX_PLATFORM_TIMEOUT_MS),
+      Math.min(deadlineMs - 1_000, REMOTE_AGENT_MAX_PLATFORM_TIMEOUT_MS),
     );
     return Math.max(2, Math.ceil(boundedPlatformBudgetMs / 1000));
   }
 
-  const configuredTimeoutMs = Number.isFinite(config?.openclawTimeoutSeconds) && config.openclawTimeoutSeconds > 0
-    ? config.openclawTimeoutSeconds * 1000
+  const configuredTimeoutMs = Number.isFinite(config?.runtimeTimeoutSeconds) && config.runtimeTimeoutSeconds > 0
+    ? config.runtimeTimeoutSeconds * 1000
     : fallbackMs;
-  const boundedMs = Math.max(2_000, Math.min(configuredTimeoutMs, OPENCLAW_MAX_PLATFORM_TIMEOUT_MS));
+  const boundedMs = Math.max(2_000, Math.min(configuredTimeoutMs, REMOTE_AGENT_MAX_PLATFORM_TIMEOUT_MS));
   return Math.max(2, Math.ceil(boundedMs / 1000));
 }
 
-function buildSessionKey(config, openclawPlayerId, matchId, playerId) {
-  return `wolfden:${openclawPlayerId}:${matchId}:${playerId}`;
+function buildSessionKey(config, remoteAgentParticipantId, matchId, playerId) {
+  return `wolfden:${remoteAgentParticipantId}:${matchId}:${playerId}`;
 }
 
 function buildHealthcheckSessionKey(config, agentName) {
   return `wolfden:health:${agentName || 'unknown-agent'}`;
 }
 
-function callOpenclawGateway(params, timeoutSeconds) {
-  const command = resolveOpenclawCommand();
+function callRemoteAgentGateway(params, timeoutSeconds) {
+  const command = resolveRemoteAgentCommand();
   const args = [
     ...command.extraArgs,
     'gateway',
@@ -411,14 +414,14 @@ function callOpenclawGateway(params, timeoutSeconds) {
     '--json',
   ];
 
-  if (process.env.WOLFDEN_OPENCLAW_GATEWAY_URL) {
-    args.push('--url', process.env.WOLFDEN_OPENCLAW_GATEWAY_URL);
+  if (process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_URL) {
+    args.push('--url', process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_URL);
   }
-  if (process.env.WOLFDEN_OPENCLAW_GATEWAY_TOKEN) {
-    args.push('--token', process.env.WOLFDEN_OPENCLAW_GATEWAY_TOKEN);
+  if (process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_TOKEN) {
+    args.push('--token', process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_TOKEN);
   }
-  if (process.env.WOLFDEN_OPENCLAW_GATEWAY_PASSWORD) {
-    args.push('--password', process.env.WOLFDEN_OPENCLAW_GATEWAY_PASSWORD);
+  if (process.env.WOLFDEN_AGENT_GATEWAY_PASSWORD) {
+    args.push('--password', process.env.WOLFDEN_AGENT_GATEWAY_PASSWORD);
   }
 
   return new Promise((resolve, reject) => {
@@ -448,11 +451,11 @@ function callOpenclawGateway(params, timeoutSeconds) {
     child.on('close', (code) => {
       clearTimeout(timer);
       if (timedOut) {
-        reject(new Error('OpenClaw agent run timed out.'));
+        reject(new Error('remote agent run timed out.'));
         return;
       }
       if (code !== 0) {
-        reject(new Error(`OpenClaw gateway call failed with exit code ${code}: ${stderr.trim() || stdout.trim() || 'no output'}`));
+        reject(new Error(`remote agent gateway call failed with exit code ${code}: ${stderr.trim() || stdout.trim() || 'no output'}`));
         return;
       }
       resolve({
@@ -477,10 +480,10 @@ function buildAgentParams({ config, prompt, sessionKey, idempotencyKey }) {
     message: prompt,
     sessionKey,
     deliver: false,
-    thinking: config?.openclawThinking || DEFAULT_OPENCLAW_THINKING,
+    thinking: config?.runtimeThinking || DEFAULT_AGENT_THINKING,
   };
   if (!compatRejectedParamKeys.has('agentId')) {
-    params.agentId = config?.openclawAgentId || DEFAULT_OPENCLAW_AGENT_ID;
+    params.agentId = config?.runtimeAgentId || DEFAULT_AGENT_RUNTIME_ID;
   }
   if (!compatRejectedParamKeys.has('idempotencyKey')) {
     params.idempotencyKey = idempotencyKey;
@@ -503,9 +506,9 @@ function resolveCompatDowngradeKeys(error) {
   return rejectedKeys;
 }
 
-async function callOpenclawGatewayWithCompat(params, timeoutSeconds) {
+async function callRemoteAgentGatewayWithCompat(params, timeoutSeconds) {
   try {
-    return await callOpenclawGateway(params, timeoutSeconds);
+    return await callRemoteAgentGateway(params, timeoutSeconds);
   } catch (error) {
     const rejectedKeys = resolveCompatDowngradeKeys(error);
     if (!rejectedKeys.length) {
@@ -517,7 +520,7 @@ async function callOpenclawGatewayWithCompat(params, timeoutSeconds) {
       compatRejectedParamKeys.add(key);
       delete downgradedParams[key];
     }
-    return callOpenclawGateway(downgradedParams, timeoutSeconds);
+    return callRemoteAgentGateway(downgradedParams, timeoutSeconds);
   }
 }
 
@@ -600,7 +603,7 @@ function findNestedObject(value, predicate, visited = new Set()) {
   return null;
 }
 
-function parseOpenclawOutput(stdout, predicate) {
+function parseRemoteAgentOutput(stdout, predicate) {
   const direct = extractJsonObjectFromText(stdout);
   if (direct) {
     return findNestedObject(direct, predicate);
@@ -645,15 +648,15 @@ function normalizeSpeech(decision, legalAction, responseSchema = null) {
   }
 
   if (requiresSpeech && !fullText) {
-    throw new Error('OpenClaw returned no speech for a speech-required action.');
+    throw new Error('remote agent returned no speech for a speech-required action.');
   }
 
   if (fullText.length < (legalAction?.minTextLength ?? 0)) {
-    throw new Error('OpenClaw returned speech shorter than the required minimum.');
+    throw new Error('remote agent returned speech shorter than the required minimum.');
   }
 
   if (fullText.length > speechBudget.maxSpeechChars) {
-    throw new Error('OpenClaw returned speech longer than the legal limit.');
+    throw new Error('remote agent returned speech longer than the legal limit.');
   }
 
   return {
@@ -676,13 +679,13 @@ function normalizeTargets(decision, legalAction) {
   ));
 
   if (targetIds.length < (legalAction?.minTargetCount ?? 0)) {
-    throw new Error('OpenClaw returned too few targets for the legal action.');
+    throw new Error('remote agent returned too few targets for the legal action.');
   }
   if (targetIds.length > (legalAction?.maxTargetCount ?? 1)) {
-    throw new Error('OpenClaw returned too many targets for the legal action.');
+    throw new Error('remote agent returned too many targets for the legal action.');
   }
   if (!targetIds.every((targetId) => legalAction.allowedTargetIds.includes(targetId))) {
-    throw new Error('OpenClaw returned an illegal target.');
+    throw new Error('remote agent returned an illegal target.');
   }
 
   if (targetIds.length === 0) {
@@ -696,12 +699,12 @@ function normalizeTargets(decision, legalAction) {
 
 function normalizeDecision(decision, legalActions, responseSchema = null) {
   if (!decision || typeof decision !== 'object') {
-    throw new Error('OpenClaw agent did not return a decision object.');
+    throw new Error('remote agent did not return a decision object.');
   }
 
   const legalAction = legalActions.find((action) => action.actionType === decision.actionType);
   if (!legalAction) {
-    throw new Error(`OpenClaw returned an illegal actionType: ${decision.actionType ?? 'unknown'}`);
+    throw new Error(`remote agent returned an illegal actionType: ${decision.actionType ?? 'unknown'}`);
   }
 
   const normalized = {
@@ -741,7 +744,7 @@ async function runAgentPrompt({
     idempotencyKey,
   });
   const startedAt = Date.now();
-  const result = await callOpenclawGatewayWithCompat(params, timeoutSeconds);
+  const result = await callRemoteAgentGatewayWithCompat(params, timeoutSeconds);
   return {
     output: result.stdout,
     latencyMs: Date.now() - startedAt,
@@ -749,31 +752,31 @@ async function runAgentPrompt({
   };
 }
 
-export async function checkOpenclawRuntimeHealth(config) {
+export async function checkRemoteAgentRuntimeHealth(config) {
   const timeoutSeconds = resolveLocalTimeoutSeconds(config, 8_000, 8_000);
   const sessionKey = buildHealthcheckSessionKey(config, config?.agentName);
   const params = buildAgentParams({
     config,
-    prompt: 'Return exactly {"ok":true,"runtime":"openclaw-agent-loop"} and nothing else.',
+    prompt: 'Return exactly {"ok":true,"runtime":"remote-agent-loop"} and nothing else.',
     sessionKey,
     idempotencyKey: buildIdempotencyKey('wolfden-health', config?.agentName, Date.now()),
   });
   const startedAt = Date.now();
 
   try {
-    const result = await callOpenclawGatewayWithCompat(params, timeoutSeconds);
-    const payload = parseOpenclawOutput(result.stdout, (value) => value && value.ok === true);
+    const result = await callRemoteAgentGatewayWithCompat(params, timeoutSeconds);
+    const payload = parseRemoteAgentOutput(result.stdout, (value) => value && value.ok === true);
     if (!payload || payload.ok !== true) {
       return {
         healthy: false,
         latencyMs: Date.now() - startedAt,
-        detail: `OpenClaw agent loop returned an unexpected healthcheck payload: ${compactText(result.stdout).slice(0, 180) || 'empty output'}`,
+        detail: `remote agent loop returned an unexpected healthcheck payload: ${compactText(result.stdout).slice(0, 180) || 'empty output'}`,
       };
     }
     return {
       healthy: true,
       latencyMs: Date.now() - startedAt,
-      detail: 'OpenClaw agent loop is reachable.',
+      detail: 'remote agent loop is reachable.',
     };
   } catch (error) {
     return {
@@ -784,25 +787,25 @@ export async function checkOpenclawRuntimeHealth(config) {
   }
 }
 
-export async function buildMirrorPlanFromOpenclaw({
+export async function buildMirrorPlanFromRemoteAgent({
   config,
-  openclawPlayerId,
+  remoteAgentParticipantId,
   planRequest,
   referenceBundle,
 }) {
-  const sessionKey = buildSessionKey(config, openclawPlayerId, planRequest.matchId, planRequest.playerId);
+  const sessionKey = buildSessionKey(config, remoteAgentParticipantId, planRequest.matchId, planRequest.playerId);
   const prompt = buildMirrorPrompt(planRequest, referenceBundle);
   const promptChars = prompt.length;
   const result = await runAgentPrompt({
     config,
-    openclawPlayerId,
+    remoteAgentParticipantId,
     sessionKey,
     prompt,
     deadlineMs: planRequest.deadlineMs ?? planRequest.decisionContext?.phase?.modelHardTimeoutMs ?? 12_000,
     idempotencyKey: buildIdempotencyKey('wolfden-plan', planRequest.requestId, planRequest.fingerprint),
   });
   const decision = normalizeDecision(
-    parseOpenclawOutput(result.output, (value) => typeof value?.actionType === 'string'),
+    parseRemoteAgentOutput(result.output, (value) => typeof value?.actionType === 'string'),
     planRequest.legalActions ?? [],
     planRequest.decisionContext?.responseSchema ?? null,
   );
@@ -811,7 +814,7 @@ export async function buildMirrorPlanFromOpenclaw({
     payload: {
       requestId: planRequest.requestId,
       fingerprint: planRequest.fingerprint,
-      clientActionId: `wolfden-openclaw-${Date.now()}`,
+      clientActionId: `wolfden-remote-agent-${Date.now()}`,
       ...decision,
     },
     latencyMs: result.latencyMs,
@@ -823,13 +826,13 @@ export async function buildMirrorPlanFromOpenclaw({
   };
 }
 
-export async function buildSeatActionFromOpenclaw({
+export async function buildSeatActionFromRemoteAgent({
   config,
-  openclawPlayerId,
+  remoteAgentParticipantId,
   turn,
   referenceBundle,
 }) {
-  const sessionKey = buildSessionKey(config, openclawPlayerId, turn.matchId, turn.playerId);
+  const sessionKey = buildSessionKey(config, remoteAgentParticipantId, turn.matchId, turn.playerId);
   const prompt = buildSeatPrompt(turn, referenceBundle);
   const deadlineMs = turn.phaseDeadlineAt
     ? Math.max(0, new Date(turn.phaseDeadlineAt).getTime() - Date.now())
@@ -842,7 +845,7 @@ export async function buildSeatActionFromOpenclaw({
     idempotencyKey: buildIdempotencyKey('wolfden-seat', turn.turnToken ?? turn.matchId, turn.playerId, turn.phase),
   });
   const decision = normalizeDecision(
-    parseOpenclawOutput(result.output, (value) => typeof value?.actionType === 'string'),
+    parseRemoteAgentOutput(result.output, (value) => typeof value?.actionType === 'string'),
     turn.legalActions ?? [],
     null,
   );

@@ -1,11 +1,13 @@
 import process from 'node:process';
 import {
   DEFAULT_CAPABILITIES,
+  PLATFORM_PROVIDER_QUERY,
   createLogger,
   loadProcessRecord,
   loadRuntimeState,
   loadSession,
   loadSkillConfig,
+  normalizePlatformPlayer,
   parseArgs,
   requestJson,
   resolveRunnerPaths,
@@ -26,7 +28,7 @@ async function main() {
 
   if (config) {
     try {
-    capabilities = await requestJson(config.apiBaseUrl, '/api/remote-agents/capabilities?providerId=openclaw');
+      capabilities = await requestJson(config.apiBaseUrl, `/api/remote-agents/capabilities?${PLATFORM_PROVIDER_QUERY}`);
     } catch (error) {
       await logger.warn('Status check could not load platform capabilities.', {
         message: error instanceof Error ? error.message : String(error),
@@ -36,9 +38,12 @@ async function main() {
 
   if (config && session) {
     try {
-    remoteProfile = await requestJson(config.apiBaseUrl, '/api/remote-agents/profile?providerId=openclaw');
-      remotePlayer = remoteProfile?.players?.find((player) => (
-        player.openclawPlayerId === session.openclawPlayerId
+      remoteProfile = await requestJson(config.apiBaseUrl, `/api/remote-agents/profile?${PLATFORM_PROVIDER_QUERY}`);
+      const players = Array.isArray(remoteProfile?.players)
+        ? remoteProfile.players.map(normalizePlatformPlayer).filter(Boolean)
+        : [];
+      remotePlayer = players.find((player) => (
+        player.remoteAgentParticipantId === session.remoteAgentParticipantId
         || player.agentName === session.agentName
       )) ?? null;
     } catch (error) {

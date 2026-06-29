@@ -28,15 +28,15 @@ async function main() {
   const existingConfig = await loadSkillConfig(paths.configPath);
   const config = normalizeSkillConfig({
     ...existingConfig,
-    ...(process.env.OPENCLAW_SKILL_REPO_URL ? { repoUrl: process.env.OPENCLAW_SKILL_REPO_URL } : {}),
-    ...(process.env.OPENCLAW_PLATFORM_SITE_URL ? { siteUrl: process.env.OPENCLAW_PLATFORM_SITE_URL } : {}),
-    ...(process.env.OPENCLAW_PLATFORM_API_BASE_URL ? { apiBaseUrl: process.env.OPENCLAW_PLATFORM_API_BASE_URL } : {}),
+    ...(process.env.WOLFDEN_AGENT_SKILL_REPO_URL ? { repoUrl: process.env.WOLFDEN_AGENT_SKILL_REPO_URL } : {}),
+    ...(process.env.WOLFDEN_AGENT_PLATFORM_SITE_URL ? { siteUrl: process.env.WOLFDEN_AGENT_PLATFORM_SITE_URL } : {}),
+    ...(process.env.WOLFDEN_AGENT_PLATFORM_API_BASE_URL ? { apiBaseUrl: process.env.WOLFDEN_AGENT_PLATFORM_API_BASE_URL } : {}),
     ...(process.env.WOLFDEN_API_BASE_URL ? { apiBaseUrl: process.env.WOLFDEN_API_BASE_URL } : {}),
     ...(process.env.WOLFDEN_BIND_CODE ? { bindCode: process.env.WOLFDEN_BIND_CODE } : {}),
     ...(process.env.WOLFDEN_AGENT_NAME ? { agentName: process.env.WOLFDEN_AGENT_NAME } : {}),
-    ...(process.env.WOLFDEN_OPENCLAW_AGENT_ID ? { openclawAgentId: process.env.WOLFDEN_OPENCLAW_AGENT_ID } : {}),
-    ...(process.env.WOLFDEN_OPENCLAW_THINKING ? { openclawThinking: process.env.WOLFDEN_OPENCLAW_THINKING } : {}),
-    ...(process.env.WOLFDEN_OPENCLAW_TIMEOUT_SECONDS ? { openclawTimeoutSeconds: Number(process.env.WOLFDEN_OPENCLAW_TIMEOUT_SECONDS) } : {}),
+    ...(process.env.WOLFDEN_AGENT_RUNTIME_ID ? { runtimeAgentId: process.env.WOLFDEN_AGENT_RUNTIME_ID } : {}),
+    ...(process.env.WOLFDEN_AGENT_THINKING ? { runtimeThinking: process.env.WOLFDEN_AGENT_THINKING } : {}),
+    ...(process.env.WOLFDEN_AGENT_TIMEOUT_SECONDS ? { runtimeTimeoutSeconds: Number(process.env.WOLFDEN_AGENT_TIMEOUT_SECONDS) } : {}),
     ...(process.env.WOLFDEN_ALLOWED_MATCH_MODES ? { allowedMatchModes: process.env.WOLFDEN_ALLOWED_MATCH_MODES } : {}),
     ...(process.env.WOLFDEN_AUTO_READY ? { autoReady: process.env.WOLFDEN_AUTO_READY !== 'false' && process.env.WOLFDEN_AUTO_READY !== '0' } : {}),
     ...(process.env.WOLFDEN_AUTO_ACCEPT ? { autoAccept: process.env.WOLFDEN_AUTO_ACCEPT !== 'false' && process.env.WOLFDEN_AUTO_ACCEPT !== '0' } : {}),
@@ -45,9 +45,9 @@ async function main() {
     ...(args.values.has('api-base-url') ? { apiBaseUrl: args.values.get('api-base-url') } : {}),
     ...(args.values.has('bind-code') ? { bindCode: args.values.get('bind-code') } : {}),
     ...(args.values.has('agent-name') ? { agentName: args.values.get('agent-name') } : {}),
-    ...(args.values.has('openclaw-agent-id') ? { openclawAgentId: args.values.get('openclaw-agent-id') } : {}),
-    ...(args.values.has('openclaw-thinking') ? { openclawThinking: args.values.get('openclaw-thinking') } : {}),
-    ...(args.values.has('openclaw-timeout-seconds') ? { openclawTimeoutSeconds: Number(args.values.get('openclaw-timeout-seconds')) } : {}),
+    ...(args.values.has('runtime-agent-id') ? { runtimeAgentId: args.values.get('runtime-agent-id') } : {}),
+    ...(args.values.has('runtime-thinking') ? { runtimeThinking: args.values.get('runtime-thinking') } : {}),
+    ...(args.values.has('runtime-timeout-seconds') ? { runtimeTimeoutSeconds: Number(args.values.get('runtime-timeout-seconds')) } : {}),
     ...(args.values.has('allowed-match-modes') ? { allowedMatchModes: args.values.get('allowed-match-modes') } : {}),
   });
   await saveSkillConfig(paths.configPath, config);
@@ -97,13 +97,13 @@ async function main() {
 
     waitForPlayerReady(config.apiBaseUrl, config.agentName)
       .then((player) => logger.info('Foreground install reached a ready player state.', {
-        openclawPlayerId: player.openclawPlayerId,
+        remoteAgentParticipantId: player.remoteAgentParticipantId,
       }))
       .catch(async (error) => {
         try {
           const player = await waitForPlayerPresence(config.apiBaseUrl, config.agentName, 5_000);
           await logger.warn('Foreground install registered the player, but the runtime is still not ready.', {
-            openclawPlayerId: player.openclawPlayerId,
+            remoteAgentParticipantId: player.remoteAgentParticipantId,
             playerStatus: player.status,
             message: error instanceof Error ? error.message : String(error),
           });
@@ -147,7 +147,7 @@ async function main() {
     const player = await waitForPlayerPresence(config.apiBaseUrl, config.agentName, 30_000);
     registered = true;
     playerStatus = player.status;
-    playerId = player.openclawPlayerId;
+    playerId = player.remoteAgentParticipantId;
 
     if (player.status === 'ready') {
       ready = true;
@@ -161,11 +161,11 @@ async function main() {
         await sleep(500);
       }
 
-      if (runtimeState?.openclawRuntimeHealthy) {
+      if (runtimeState?.remoteAgentRuntimeHealthy) {
         const readyPlayer = await waitForPlayerReady(config.apiBaseUrl, config.agentName, 10_000);
         ready = true;
         playerStatus = readyPlayer.status;
-        playerId = readyPlayer.openclawPlayerId;
+        playerId = readyPlayer.remoteAgentParticipantId;
       }
     }
   } catch (error) {
@@ -185,7 +185,7 @@ async function main() {
     registered,
     playerStatus,
     ready,
-    openclawPlayerId: playerId,
+    remoteAgentParticipantId: playerId,
     runtimeState,
   }, null, 2));
 }
