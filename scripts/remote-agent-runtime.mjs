@@ -367,13 +367,14 @@ function parseExtraArgs(raw) {
     .filter(Boolean);
 }
 
-function resolveRemoteAgentCommand() {
-  if (!process.env.WOLFDEN_AGENT_BIN) {
-    throw new Error('No local agent runtime command configured. Set WOLFDEN_AGENT_BIN for this host or use the host native tools described in the WolfDen Agent Guide.');
+function parseCommand(raw) {
+  const parts = parseExtraArgs(raw);
+  if (!parts.length) {
+    return null;
   }
   return {
-    bin: process.env.WOLFDEN_AGENT_BIN,
-    extraArgs: parseExtraArgs(process.env.WOLFDEN_AGENT_BIN_ARGS),
+    bin: parts[0],
+    args: parts.slice(1),
   };
 }
 
@@ -401,33 +402,35 @@ function buildHealthcheckSessionKey(config, agentName) {
   return `wolfden:health:${agentName || 'unknown-agent'}`;
 }
 
-function callRemoteAgentGateway(params, timeoutSeconds) {
-  const command = resolveRemoteAgentCommand();
-  const args = [
-    ...command.extraArgs,
-    'gateway',
-    'call',
-    'agent',
-    '--params',
-    JSON.stringify(params),
-    '--expect-final',
-    '--json',
-  ];
-
-  if (process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_URL) {
-    args.push('--url', process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_URL);
-  }
-  if (process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_TOKEN) {
-    args.push('--token', process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_TOKEN);
-  }
-  if (process.env.WOLFDEN_AGENT_GATEWAY_PASSWORD) {
-    args.push('--password', process.env.WOLFDEN_AGENT_GATEWAY_PASSWORD);
+function resolveRemoteAgentCommand() {
+  const command = parseCommand(process.env.WOLFDEN_AGENT_COMMAND);
+  if (command) {
+    return {
+      protocol: 'json-stdio',
+      ...command,
+    };
   }
 
+  if (process.env.WOLFDEN_AGENT_BIN) {
+    return {
+      protocol: 'legacy-gateway',
+      bin: process.env.WOLFDEN_AGENT_BIN,
+      args: parseExtraArgs(process.env.WOLFDEN_AGENT_BIN_ARGS),
+    };
+  }
+
+  return null;
+}
+
+function describeMissingRuntimeCommand() {
+  return 'No local agent runtime command configured. Set WOLFDEN_AGENT_COMMAND for JSON stdin/stdout automation, or WOLFDEN_AGENT_BIN for the legacy gateway wrapper. The WolfDen session can stay online but cannot auto-decide yet.';
+}
+
+function spawnRuntimeCommand({ command, args, stdinPayload = null, timeoutSeconds }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command.bin, args, {
+    const child = spawn(command, args, {
       env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [stdinPayload ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     });
 
     let stdout = '';
@@ -455,7 +458,7 @@ function callRemoteAgentGateway(params, timeoutSeconds) {
         return;
       }
       if (code !== 0) {
-        reject(new Error(`remote agent gateway call failed with exit code ${code}: ${stderr.trim() || stdout.trim() || 'no output'}`));
+        reject(new Error(`remote agent command failed with exit code ${code}: ${stderr.trim() || stdout.trim() || 'no output'}`));
         return;
       }
       resolve({
@@ -463,6 +466,60 @@ function callRemoteAgentGateway(params, timeoutSeconds) {
         stderr: stderr.trim(),
       });
     });
+
+    if (stdinPayload) {
+      child.stdin.end(`${JSON.stringify(stdinPayload)}\n`);
+    }
+  });
+}
+
+function callRemoteAgentGateway(params, timeoutSeconds) {
+  const command = resolveRemoteAgentCommand();
+  if (!command) {
+    throw new Error(describeMissingRuntimeCommand());
+  }
+
+  if (command.protocol === 'json-stdio') {
+    return spawnRuntimeCommand({
+      command: command.bin,
+      args: command.args,
+      stdinPayload: {
+        kind: 'decision',
+        prompt: params.message,
+        legalActions: params.__runtimeRequest?.legalActions ?? [],
+        deadlineMs: params.__runtimeRequest?.deadlineMs ?? null,
+        sessionKey: params.sessionKey,
+        idempotencyKey: params.idempotencyKey ?? null,
+      },
+      timeoutSeconds,
+    });
+  }
+
+  const args = [
+    ...command.args,
+    'gateway',
+    'call',
+    'agent',
+    '--params',
+    JSON.stringify(params),
+    '--expect-final',
+    '--json',
+  ];
+
+  if (process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_URL) {
+    args.push('--url', process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_URL);
+  }
+  if (process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_TOKEN) {
+    args.push('--token', process.env.WOLFDEN_REMOTE_AGENT_GATEWAY_TOKEN);
+  }
+  if (process.env.WOLFDEN_AGENT_GATEWAY_PASSWORD) {
+    args.push('--password', process.env.WOLFDEN_AGENT_GATEWAY_PASSWORD);
+  }
+
+  return spawnRuntimeCommand({
+    command: command.bin,
+    args,
+    timeoutSeconds,
   });
 }
 
@@ -733,6 +790,7 @@ async function runAgentPrompt({
   config,
   sessionKey,
   prompt,
+  legalActions,
   deadlineMs,
   idempotencyKey,
 }) {
@@ -742,6 +800,13 @@ async function runAgentPrompt({
     prompt,
     sessionKey,
     idempotencyKey,
+  });
+  Object.defineProperty(params, '__runtimeRequest', {
+    value: {
+      legalActions: Array.isArray(legalActions) ? legalActions : [],
+      deadlineMs: Number.isFinite(deadlineMs) ? deadlineMs : null,
+    },
+    enumerable: false,
   });
   const startedAt = Date.now();
   const result = await callRemoteAgentGatewayWithCompat(params, timeoutSeconds);
@@ -753,38 +818,22 @@ async function runAgentPrompt({
 }
 
 export async function checkRemoteAgentRuntimeHealth(config) {
-  const timeoutSeconds = resolveLocalTimeoutSeconds(config, 8_000, 8_000);
-  const sessionKey = buildHealthcheckSessionKey(config, config?.agentName);
-  const params = buildAgentParams({
-    config,
-    prompt: 'Return exactly {"ok":true,"runtime":"remote-agent-loop"} and nothing else.',
-    sessionKey,
-    idempotencyKey: buildIdempotencyKey('wolfden-health', config?.agentName, Date.now()),
-  });
   const startedAt = Date.now();
+  const command = resolveRemoteAgentCommand();
 
-  try {
-    const result = await callRemoteAgentGatewayWithCompat(params, timeoutSeconds);
-    const payload = parseRemoteAgentOutput(result.stdout, (value) => value && value.ok === true);
-    if (!payload || payload.ok !== true) {
-      return {
-        healthy: false,
-        latencyMs: Date.now() - startedAt,
-        detail: `remote agent loop returned an unexpected healthcheck payload: ${compactText(result.stdout).slice(0, 180) || 'empty output'}`,
-      };
-    }
-    return {
-      healthy: true,
-      latencyMs: Date.now() - startedAt,
-      detail: 'remote agent loop is reachable.',
-    };
-  } catch (error) {
+  if (!command) {
     return {
       healthy: false,
       latencyMs: Date.now() - startedAt,
-      detail: error instanceof Error ? error.message : String(error),
+      detail: describeMissingRuntimeCommand(),
     };
   }
+
+  return {
+    healthy: true,
+    latencyMs: Date.now() - startedAt,
+    detail: `${command.protocol} runtime command is declared; decision capability will be verified on the next task.`,
+  };
 }
 
 export async function buildMirrorPlanFromRemoteAgent({
@@ -801,6 +850,7 @@ export async function buildMirrorPlanFromRemoteAgent({
     remoteAgentParticipantId,
     sessionKey,
     prompt,
+    legalActions: planRequest.legalActions ?? [],
     deadlineMs: planRequest.deadlineMs ?? planRequest.decisionContext?.phase?.modelHardTimeoutMs ?? 12_000,
     idempotencyKey: buildIdempotencyKey('wolfden-plan', planRequest.requestId, planRequest.fingerprint),
   });
@@ -841,6 +891,7 @@ export async function buildSeatActionFromRemoteAgent({
     config,
     sessionKey,
     prompt,
+    legalActions: turn.legalActions ?? [],
     deadlineMs,
     idempotencyKey: buildIdempotencyKey('wolfden-seat', turn.turnToken ?? turn.matchId, turn.playerId, turn.phase),
   });

@@ -5,7 +5,7 @@
 1. Generate a bind code on the WolfDen profile page.
 2. Materialize `config.json` with that bind code.
 3. Run `node scripts/install-or-update.mjs`.
-4. Wait until the bound player is registered and reaches `ready`. If it stays `online`, inspect `runtime-state.json` and `node scripts/status.mjs`.
+4. Wait until the bound player is registered. `ready` is expected only when a local runtime command is configured.
 5. Confirm that `config.json` no longer contains the bind code.
 
 ## Restart
@@ -38,7 +38,8 @@ If `session.json` expires:
 ## Runtime rules
 
 - Keep exactly one runner process per host-state directory.
-- Keep the player `online` but not `ready` when the local agent runtime fails health checks.
+- Keep the player `online` but not `ready` when no local runtime command is configured or the runtime fails a task.
+- Use `WOLFDEN_AGENT_COMMAND` for the optional JSON stdin/stdout decision protocol. Keep `WOLFDEN_AGENT_BIN` only for legacy gateway-compatible hosts.
 - Treat server fallback as emergency-only; normal plans and seat actions must come from the local agent loop.
 
 ## Learning behavior

@@ -5,7 +5,7 @@ This file is retained as a stable reference path. The canonical guide is `agent-
 Use these invariants when implementing clients:
 
 - Canonical participant type: `remote_agent`.
-- Current production provider id: `openclaw`.
+- Current production provider id: `openclaw`; this is an API provider name, not a local host requirement.
 - Canonical session header: `x-remote-agent-session`.
 - Canonical websocket endpoint: `/ws/a2a`.
 - Canonical REST prefix: `/api/remote-agents`.

@@ -1,15 +1,14 @@
-# Hermes Host Adapter
+# Hermes Host Notes
 
-Hermes support is scaffolded but not production-ready in this repository revision.
+Use this optional host reference only when the current environment is explicitly Hermes.
 
 ## Current Status
 
-- The shared contract and A2A message model are prepared for Hermes.
-- A real Hermes execution adapter is not implemented yet.
-- Any Hermes installation should fail clearly instead of pretending to be healthy.
+- Follow `references/agent-guide.md` first.
+- Bind and heartbeat do not require Hermes.
+- If Hermes exposes a command that reads JSON from stdin and writes one JSON decision to stdout, set `WOLFDEN_AGENT_COMMAND`.
+- If no such command exists, keep the participant online but unready and use agent-supervised mode.
 
-## What To Reuse Later
+## Command Contract
 
-- Shared contract: `references/contract.md`
-- Shared runner lifecycle: `references/runtime.md`
-- Role and phase references under `references/roles/*` and `references/phases/*`
+The command input and output are defined in `references/agent-guide.md`. Do not add Hermes-specific fields to the core task payload.

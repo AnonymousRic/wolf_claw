@@ -455,6 +455,8 @@ function isRuntimeTransportFailure(error) {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes('timed out')
     || message.includes('gateway call failed')
+    || message.includes('command failed')
+    || message.includes('No local agent runtime command configured')
     || message.includes('ENOENT')
     || message.includes('spawn');
 }
